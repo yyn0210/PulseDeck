@@ -1,0 +1,37 @@
+# 默认：自动识别文本文件并统一为 LF 入库
+* text=auto eol=lf
+
+# 明确声明为文本（跨平台统一 LF）
+*.rs    text eol=lf
+*.toml  text eol=lf
+*.json  text eol=lf
+*.js    text eol=lf
+*.mjs   text eol=lf
+*.css   text eol=lf
+*.html  text eol=lf
+*.md    text eol=lf
+*.py    text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+
+# Windows 专用批处理/命令脚本保持 CRLF
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.ps1   text eol=crlf
+
+# 二进制文件不做换行符转换
+*.exe   binary
+*.dll   binary
+*.bin   binary
+*.ico   binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.webp  binary
+
+# 锁文件：在 diff/merge 中始终保留为普通文件
+Cargo.lock  -diff linguist-generated=false
+package-lock.json  -diff linguist-generated=false
+pnpm-lock.yaml     -diff linguist-generated=false
+yarn.lock          -diff linguist-generated=false
