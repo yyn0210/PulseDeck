@@ -12,6 +12,9 @@ src-tauri/gen/schemas/
 # === 已废弃的工具（LibreHardwareMonitor 发行版，2026-10-09 起运行时已移除）===
 tools/lhm/
 
+# === WorkBuddy 本地工作记忆（仅本地留存，不入库） ===
+.workbuddy/memory/
+
 # === 日志与临时文件 ===
 *.log
 npm-debug.log*
