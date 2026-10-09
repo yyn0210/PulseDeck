@@ -9,6 +9,9 @@ dist-ssr/
 src-tauri/target/
 src-tauri/gen/schemas/
 
+# === 已废弃的工具（LibreHardwareMonitor 发行版，2026-10-09 起运行时已移除）===
+tools/lhm/
+
 # === 日志与临时文件 ===
 *.log
 npm-debug.log*
