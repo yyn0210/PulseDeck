@@ -1,0 +1,21 @@
+{
+  "name": "win-system-monitor",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "build:exe": "tauri build --no-bundle",
+    "ui": "vite",
+    "ui:build": "vite build",
+    "ui:preview": "vite preview"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.1",
+    "vite": "^7.0.0"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.12.1"
+  }
+}

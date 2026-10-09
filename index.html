@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Win 系统监控</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header class="topbar">
+        <div class="brand">
+          <div class="logo">◈</div>
+          <div class="brand-text">
+            <h1>Win 系统监控</h1>
+            <p id="machine-line">正在读取系统信息…</p>
+          </div>
+        </div>
+
+        <div class="toolbar">
+          <div class="meta">
+            <span class="meta-value" id="uptime">--</span>
+            <span class="meta-label">运行时间</span>
+          </div>
+          <div class="meta">
+            <span class="meta-value" id="proc-count">--</span>
+            <span class="meta-label">进程数</span>
+          </div>
+          <div class="meta">
+            <span class="meta-value" id="sample-interval">--</span>
+            <span class="meta-label">采样间隔</span>
+          </div>
+          <select id="interval-select" title="刷新间隔">
+            <option value="500">500 ms</option>
+            <option value="1000" selected>1 s</option>
+            <option value="2000">2 s</option>
+            <option value="5000">5 s</option>
+          </select>
+          <button id="pause-btn" class="btn">暂停</button>
+        </div>
+      </header>
+
+      <div id="banner" class="banner hidden"></div>
+
+      <main class="grid">
+        <!-- CPU -->
+        <section class="card card-ring" data-accent="cpu">
+          <header class="card-head">
+            <h2>处理器</h2>
+            <span class="tag" id="cpu-tag">--</span>
+          </header>
+          <div class="ring-wrap">
+            <div class="ring">
+              <svg viewBox="0 0 120 120">
+                <circle class="ring-bg" cx="60" cy="60" r="52"></circle>
+                <circle class="ring-fg" id="cpu-ring" cx="60" cy="60" r="52"></circle>
+              </svg>
+              <div class="ring-center">
+                <span class="ring-value" id="cpu-value">0<i>%</i></span>
+                <span class="ring-label">总占用</span>
+              </div>
+            </div>
+            <ul class="kv">
+              <li><span>型号</span><b id="cpu-brand">--</b></li>
+              <li><span>核心 / 线程</span><b id="cpu-cores">--</b></li>
+              <li><span>当前主频</span><b id="cpu-freq">--</b></li>
+              <li><span>温度</span><b id="cpu-temp">--</b></li>
+            </ul>
+          </div>
+        </section>
+
+        <!-- 内存 -->
+        <section class="card card-ring" data-accent="mem">
+          <header class="card-head">
+            <h2>内存</h2>
+            <span class="tag" id="mem-tag">--</span>
+          </header>
+          <div class="ring-wrap">
+            <div class="ring">
+              <svg viewBox="0 0 120 120">
+                <circle class="ring-bg" cx="60" cy="60" r="52"></circle>
+                <circle class="ring-fg" id="mem-ring" cx="60" cy="60" r="52"></circle>
+              </svg>
+              <div class="ring-center">
+                <span class="ring-value" id="mem-value">0<i>%</i></span>
+                <span class="ring-label">已使用</span>
+              </div>
+            </div>
+            <ul class="kv">
+              <li><span>已用 / 总量</span><b id="mem-used">--</b></li>
+              <li><span>可用</span><b id="mem-avail">--</b></li>
+              <li><span>已提交</span><b id="mem-commit">--</b></li>
+            </ul>
+          </div>
+        </section>
+
+        <!-- 电池 -->
+        <section class="card card-ring" data-accent="bat">
+          <header class="card-head">
+            <h2>电池</h2>
+            <span class="tag" id="bat-status">--</span>
+          </header>
+          <div class="ring-wrap">
+            <div class="ring">
+              <svg viewBox="0 0 120 120">
+                <circle class="ring-bg" cx="60" cy="60" r="52"></circle>
+                <circle class="ring-fg" id="bat-ring" cx="60" cy="60" r="52"></circle>
+              </svg>
+              <div class="ring-center">
+                <span class="ring-value" id="bat-value">--</span>
+                <span class="ring-label" id="bat-label">暂无电池</span>
+              </div>
+            </div>
+            <ul class="kv">
+              <li><span>剩余 / 满充</span><b id="bat-energy">--</b></li>
+              <li><span>剩余续航</span><b id="bat-remain">--</b></li>
+              <li><span>充满需要</span><b id="bat-tofull">--</b></li>
+            </ul>
+          </div>
+        </section>
+
+        <!-- GPU -->
+        <section class="card card-ring" data-accent="gpu">
+          <header class="card-head">
+            <h2>GPU</h2>
+            <span class="tag" id="gpu-tag">--</span>
+          </header>
+          <div class="ring-wrap">
+            <div class="ring">
+              <svg viewBox="0 0 120 120">
+                <circle class="ring-bg" cx="60" cy="60" r="52"></circle>
+                <circle class="ring-fg" id="gpu-ring" cx="60" cy="60" r="52"></circle>
+              </svg>
+              <div class="ring-center">
+                <span class="ring-value" id="gpu-value">--</span>
+                <span class="ring-label" id="gpu-label">显卡占用</span>
+              </div>
+            </div>
+            <ul class="kv">
+              <li><span>型号</span><b id="gpu-name">--</b></li>
+              <li><span>显存</span><b id="gpu-mem">--</b></li>
+              <li><span>温度</span><b id="gpu-temp">--</b></li>
+              <li><span>功耗</span><b id="gpu-power">--</b></li>
+            </ul>
+          </div>
+        </section>
+
+        <!-- 电源功率 -->
+        <section class="card card-power" data-accent="power">
+          <header class="card-head">
+            <h2>电源功率</h2>
+            <span class="tag" id="power-source">--</span>
+          </header>
+          <div class="power-body">
+            <div class="power-main">
+              <span class="power-value" id="power-value">0.0</span>
+              <span class="power-unit">W</span>
+            </div>
+            <p class="power-hint" id="power-hint">等待数据…</p>
+            <div class="power-row">
+              <div>
+                <span class="power-sub-label">CPU 功耗</span>
+                <b id="cpu-power-value">--</b>
+              </div>
+              <div>
+                <span class="power-sub-label">电池</span>
+                <b id="bat-power-state">--</b>
+              </div>
+              <div>
+                <span class="power-sub-label">电源</span>
+                <b id="ac-status">--</b>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 网络 -->
+        <section class="card card-net" data-accent="net">
+          <header class="card-head">
+            <h2>网络</h2>
+            <div class="legend">
+              <span><i class="dot rx"></i>下行</span>
+              <span><i class="dot tx"></i>上行</span>
+            </div>
+          </header>
+          <div class="net-head">
+            <div class="net-rate">
+              <span class="net-arrow down">↓</span>
+              <span class="net-value" id="net-rx">--</span>
+              <span class="net-unit">/s</span>
+            </div>
+            <div class="net-rate">
+              <span class="net-arrow up">↑</span>
+              <span class="net-value" id="net-tx">--</span>
+              <span class="net-unit">/s</span>
+            </div>
+            <div class="net-total">
+              <span class="net-total-label">累计流量</span>
+              <b id="net-total">--</b>
+            </div>
+          </div>
+          <canvas id="net-chart" class="chart net-chart"></canvas>
+          <div class="iface-list" id="iface-list"></div>
+        </section>
+
+        <!-- CPU 详情 -->
+        <section class="card span-7">
+          <header class="card-head">
+            <h2>CPU 占用趋势 与 每核负载</h2>
+            <div class="legend">
+              <span><i class="dot cpu"></i>CPU</span>
+              <span><i class="dot mem"></i>内存</span>
+            </div>
+          </header>
+          <canvas id="trend-chart" class="chart"></canvas>
+          <div class="core-grid" id="core-grid"></div>
+        </section>
+
+        <!-- 磁盘 -->
+        <section class="card span-5">
+          <header class="card-head">
+            <h2>硬盘</h2>
+            <span class="tag" id="disk-tag">--</span>
+          </header>
+          <div class="disk-list" id="disk-list"></div>
+        </section>
+
+        <!-- 进程 -->
+        <section class="card span-12">
+          <header class="card-head">
+            <h2>资源占用 Top 进程</h2>
+            <span class="tag" id="proc-tag">--</span>
+          </header>
+          <div class="proc-tables">
+            <table class="proc-table">
+              <thead>
+                <tr><th>#</th><th>进程</th><th>PID</th><th>CPU</th><th>内存</th></tr>
+              </thead>
+              <tbody id="top-cpu-body"></tbody>
+            </table>
+            <table class="proc-table">
+              <thead>
+                <tr><th>#</th><th>进程</th><th>PID</th><th>内存</th><th>CPU</th></tr>
+              </thead>
+              <tbody id="top-mem-body"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- 偏好设置 -->
+        <section class="card span-12 card-settings">
+          <header class="card-head">
+            <h2>偏好设置</h2>
+            <span class="tag">随改随生效</span>
+          </header>
+          <div class="settings-grid">
+            <label class="switch-row">
+              <span class="switch-text">
+                <b>开机自启</b>
+                <small>写入注册表 Run 项，登录即启动并常驻托盘</small>
+              </span>
+              <input type="checkbox" id="opt-autostart" />
+              <i class="switch" aria-hidden="true"></i>
+            </label>
+            <label class="switch-row">
+              <span class="switch-text">
+                <b>关闭时最小化到托盘</b>
+                <small>关闭窗口不退出，后台继续采样；托盘菜单选「退出」才真正结束</small>
+              </span>
+              <input type="checkbox" id="opt-tray" checked />
+              <i class="switch" aria-hidden="true"></i>
+            </label>
+            <label class="switch-row">
+              <span class="switch-text">
+                <b>列出无流量网卡</b>
+                <small>展开所有网卡明细（VMware / Hyper-V / WSL 等虚拟网卡）</small>
+              </span>
+              <input type="checkbox" id="opt-idle-iface" />
+              <i class="switch" aria-hidden="true"></i>
+            </label>
+          </div>
+          <p class="hint hidden" id="thermal-hint"></p>
+        </section>
+      </main>
+
+      <footer class="statusbar">
+        <span id="status-left">就绪</span>
+        <span id="status-right">数据来源：sysinfo + Win32 (CallNtPowerInformation / GlobalMemoryStatusEx)</span>
+      </footer>
+    </div>
+
+    <!-- 开发预览替身：仅在 URL 带 ?mock=1 时生效，Tauri 环境下不会加载 -->
+    <script src="/mock-preview.js"></script>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
