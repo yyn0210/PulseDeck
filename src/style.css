@@ -84,6 +84,10 @@ body {
   box-shadow: 0 6px 20px rgba(79, 140, 255, 0.35);
 }
 
+.brand-text {
+  min-width: 0;
+}
+
 .brand-text h1 {
   margin: 0;
   font-size: 16px;
@@ -98,13 +102,14 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 460px;
+  max-width: 380px;
 }
 
 .toolbar {
   display: flex;
   align-items: center;
   gap: 10px;
+  flex: 0 0 auto;
 }
 
 .meta {
@@ -146,7 +151,40 @@ select {
 
 .btn:hover,
 select:hover {
-  background: rgba(255, 255, 255, 0.12);
+  background-color: rgba(255, 255, 255, 0.12);
+}
+
+/* ---------------- 原生下拉框（自绘箭头 + 强制深色弹层） ----------------
+ * `appearance: none` 会连原生箭头一起去掉，必须自绘，否则只有一个空的方块。
+ * 另外 WebView2 的下拉弹层默认跟随系统主题（浅色系统下白底浅字，几乎不可读），
+ * 必须显式给 option 上色，`:root` 的 color-scheme 不足以覆盖弹层。 */
+select {
+  padding-right: 30px;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' fill='none' stroke='%2393a1bb' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 10px 6px;
+}
+
+select:hover {
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' fill='none' stroke='%23e8eefb' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+}
+
+select:focus-visible {
+  outline: none;
+  border-color: rgba(79, 140, 255, 0.65);
+  box-shadow: 0 0 0 3px rgba(79, 140, 255, 0.18);
+}
+
+select option {
+  background-color: #101728;
+  color: var(--text);
+}
+
+select option:checked,
+select option:hover {
+  background-color: #2b4a86;
+  color: #fff;
 }
 
 .btn.active {
@@ -157,6 +195,46 @@ select:hover {
 
 .btn:active {
   transform: translateY(1px);
+}
+
+/* ---------------- 页面切换导航 ---------------- */
+
+.nav {
+  display: flex;
+  gap: 4px;
+  padding: 3px;
+  border-radius: 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  /* 居中靠 auto 外边距；窗口变窄时让品牌区先收缩，导航保持原尺寸 */
+  margin: 0 auto;
+  flex: 0 0 auto;
+}
+
+.nav-btn {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  padding: 7px 20px;
+  border-radius: 9px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.nav-btn:hover {
+  color: var(--text);
+  background: var(--panel-strong);
+}
+
+.nav-btn.active {
+  color: #fff;
+  background: linear-gradient(135deg, var(--cpu), #6f9cff);
+  box-shadow: 0 4px 14px rgba(79, 140, 255, 0.35);
 }
 
 /* ---------------- banner ---------------- */
@@ -174,6 +252,174 @@ select:hover {
 .hidden {
   display: none !important;
 }
+
+/* ---------------- 主页面顶部提示条 ---------------- */
+
+/* 常驻在滚动区之上，不随 `.grid` 滚走 */
+.tipbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 9px 12px;
+  border-radius: 12px;
+  background: rgba(245, 196, 81, 0.1);
+  border: 1px solid rgba(245, 196, 81, 0.28);
+  color: #e3cf94;
+  font-size: 12px;
+}
+
+.tipbar-dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--disk);
+  box-shadow: 0 0 8px rgba(245, 196, 81, 0.7);
+}
+
+.tipbar-text,
+.tipbar-question {
+  flex: 1 1 auto;
+  min-width: 0;
+  line-height: 1.5;
+}
+
+/* 确认态的两套内容由 .tipbar--confirm 切换（默认收起确认态） */
+.tipbar-question,
+.tipbar-confirm {
+  display: none;
+}
+
+.tipbar--confirm .tipbar-text {
+  display: none;
+}
+
+.tipbar--confirm .tipbar-question {
+  display: block;
+}
+
+.tipbar--confirm .tipbar-actions {
+  display: none;
+}
+
+.tipbar--confirm .tipbar-confirm {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.tipbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.tipbar-text b {
+  font-weight: 600;
+  color: #ffd98a;
+}
+
+.tipbar-action {
+  flex: 0 0 auto;
+  appearance: none;
+  font-family: inherit;
+  font-size: 11.5px;
+  padding: 5px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  white-space: nowrap;
+  color: #1b1a16;
+  background: #f5c451;
+  border: 1px solid rgba(245, 196, 81, 0.85);
+  transition: background 0.15s ease;
+}
+
+.tipbar-action:hover {
+  background: #ffd672;
+}
+
+.tipbar-close {
+  flex: 0 0 auto;
+  appearance: none;
+  font-family: inherit;
+  font-size: 15px;
+  line-height: 1;
+  padding: 3px 7px;
+  border-radius: 7px;
+  cursor: pointer;
+  color: var(--text-dim);
+  background: transparent;
+  border: 1px solid transparent;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.tipbar-close:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.1);
+}
+
+/* 确认态里的次级按钮（仅本次 / 取消） */
+.tipbar-btn {
+  flex: 0 0 auto;
+  appearance: none;
+  font-family: inherit;
+  font-size: 11.5px;
+  padding: 5px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  white-space: nowrap;
+  color: #e3cf94;
+  background: rgba(245, 196, 81, 0.12);
+  border: 1px solid rgba(245, 196, 81, 0.45);
+  transition: background 0.15s ease;
+}
+
+.tipbar-btn:hover {
+  background: rgba(245, 196, 81, 0.22);
+}
+
+.tipbar-btn--bare {
+  color: var(--text-dim);
+  background: transparent;
+  border-color: transparent;
+}
+
+.tipbar-btn--bare:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.1);
+}
+
+/* 设置页「高级采集」里的「已永久关闭…重新开启」 */
+.tip-muted-note {
+  margin: 10px 0 0;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.link-btn {
+  appearance: none;
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: var(--cpu);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.link-btn:hover {
+  color: #7eaaff;
+}
+
 
 /* ---------------- grid ---------------- */
 
@@ -802,16 +1048,128 @@ select:hover {
   white-space: nowrap;
 }
 
-/* ---------------- 设置 ---------------- */
+/* ---------------- 设置页 ---------------- */
 
-.card-settings {
-  gap: 4px;
+/* 设置页与监控页一样，是 #app 里唯一的滚动容器 */
+.settings-page {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: 6px;
+}
+
+.settings-inner {
+  max-width: 880px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
 }
 
 .settings-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: 10px;
+}
+
+/* 行式设置：左文案 + 右控件 */
+.setting-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 11px 14px;
+  border-radius: 10px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+}
+
+.setting-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.setting-text b {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.setting-text small {
+  font-size: 10.5px;
+  color: var(--text-faint);
+  line-height: 1.4;
+}
+
+.setting-row select {
+  flex: 0 0 auto;
+}
+
+.setting-desc {
+  margin: 0 0 10px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  line-height: 1.6;
+}
+
+/* 高级采集通道状态 */
+.adv-status {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.adv-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+}
+
+.adv-dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+
+.adv-item.ok .adv-dot {
+  background: var(--mem);
+  box-shadow: 0 0 8px rgba(34, 211, 165, 0.7);
+}
+
+.adv-item.warn .adv-dot {
+  background: var(--disk);
+  box-shadow: 0 0 8px rgba(245, 196, 81, 0.7);
+}
+
+.adv-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.adv-text b {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.adv-text small {
+  font-size: 10.5px;
+  color: var(--text-faint);
+  line-height: 1.4;
 }
 
 .switch-row {

@@ -17,6 +17,14 @@
           </div>
         </div>
 
+        <!-- 页面切换：监控 / 设置 -->
+        <nav class="nav" id="nav" role="tablist" aria-label="页面切换">
+          <button class="nav-btn active" data-view="monitor" role="tab" type="button">
+            监控
+          </button>
+          <button class="nav-btn" data-view="settings" role="tab" type="button">设置</button>
+        </nav>
+
         <div class="toolbar">
           <div class="meta">
             <span class="meta-value" id="uptime">--</span>
@@ -30,19 +38,34 @@
             <span class="meta-value" id="sample-interval">--</span>
             <span class="meta-label">采样间隔</span>
           </div>
-          <select id="interval-select" title="刷新间隔">
-            <option value="500">500 ms</option>
-            <option value="1000" selected>1 s</option>
-            <option value="2000">2 s</option>
-            <option value="5000">5 s</option>
-          </select>
           <button id="pause-btn" class="btn">暂停</button>
         </div>
       </header>
 
       <div id="banner" class="banner hidden"></div>
 
-      <main class="grid">
+      <!-- 主页面顶部提示条：PawnIO 未安装时提醒前往设置页；点「×」后再选「仅本次 / 永久关闭」 -->
+      <div id="tipbar" class="tipbar hidden">
+        <i class="tipbar-dot" aria-hidden="true"></i>
+        <span class="tipbar-text">
+          未安装 <b>PawnIO</b> 内核驱动，CPU 核心温度暂不可读。可前往「设置 → 高级采集」安装。
+        </span>
+        <span class="tipbar-question">以后不再提醒此提示？</span>
+
+        <div class="tipbar-actions">
+          <button class="tipbar-action" id="tipbar-action" type="button">去设置</button>
+          <button class="tipbar-close" id="tipbar-close" type="button" aria-label="关闭提示">×</button>
+        </div>
+
+        <div class="tipbar-confirm">
+          <button class="tipbar-action" id="tipbar-forget" type="button">永久关闭</button>
+          <button class="tipbar-btn" id="tipbar-once" type="button">仅本次</button>
+          <button class="tipbar-btn tipbar-btn--bare" id="tipbar-cancel" type="button">取消</button>
+        </div>
+      </div>
+
+      <!-- ================= 监控页 ================= -->
+      <main class="grid" id="view-monitor">
         <!-- CPU -->
         <section class="card card-ring" data-accent="cpu">
           <header class="card-head">
@@ -248,41 +271,85 @@
             </table>
           </div>
         </section>
+      </main>
 
-        <!-- 偏好设置 -->
-        <section class="card span-12 card-settings">
-          <header class="card-head">
-            <h2>偏好设置</h2>
-            <span class="tag">随改随生效</span>
-          </header>
-          <div class="settings-grid">
-            <label class="switch-row">
-              <span class="switch-text">
-                <b>开机自启</b>
-                <small>写入注册表 Run 项，登录即启动并常驻托盘</small>
-              </span>
-              <input type="checkbox" id="opt-autostart" />
-              <i class="switch" aria-hidden="true"></i>
-            </label>
-            <label class="switch-row">
-              <span class="switch-text">
-                <b>关闭时最小化到托盘</b>
-                <small>关闭窗口不退出，后台继续采样；托盘菜单选「退出」才真正结束</small>
-              </span>
-              <input type="checkbox" id="opt-tray" checked />
-              <i class="switch" aria-hidden="true"></i>
-            </label>
-            <label class="switch-row">
-              <span class="switch-text">
-                <b>列出无流量网卡</b>
-                <small>展开所有网卡明细（VMware / Hyper-V / WSL 等虚拟网卡）</small>
-              </span>
-              <input type="checkbox" id="opt-idle-iface" />
-              <i class="switch" aria-hidden="true"></i>
-            </label>
-          </div>
-          <p class="hint hidden" id="thermal-hint"></p>
-        </section>
+      <!-- ================= 设置页 ================= -->
+      <main class="settings-page hidden" id="view-settings">
+        <div class="settings-inner">
+          <!-- 常规 -->
+          <section class="card">
+            <header class="card-head">
+              <h2>常规</h2>
+              <span class="tag">随改随生效</span>
+            </header>
+            <div class="settings-grid">
+              <label class="switch-row">
+                <span class="switch-text">
+                  <b>开机自启</b>
+                  <small>写入注册表 Run 项，登录即启动并常驻托盘</small>
+                </span>
+                <input type="checkbox" id="opt-autostart" />
+                <i class="switch" aria-hidden="true"></i>
+              </label>
+              <label class="switch-row">
+                <span class="switch-text">
+                  <b>关闭时最小化到托盘</b>
+                  <small>关闭窗口不退出，后台继续采样；托盘菜单选「退出」才真正结束</small>
+                </span>
+                <input type="checkbox" id="opt-tray" checked />
+                <i class="switch" aria-hidden="true"></i>
+              </label>
+              <label class="switch-row">
+                <span class="switch-text">
+                  <b>列出无流量网卡</b>
+                  <small>展开所有网卡明细（VMware / Hyper-V / WSL 等虚拟网卡）</small>
+                </span>
+                <input type="checkbox" id="opt-idle-iface" />
+                <i class="switch" aria-hidden="true"></i>
+              </label>
+            </div>
+          </section>
+
+          <!-- 采样 -->
+          <section class="card">
+            <header class="card-head">
+              <h2>采样</h2>
+              <span class="tag" id="sample-tag">--</span>
+            </header>
+            <div class="setting-rows">
+              <label class="setting-row">
+                <span class="setting-text">
+                  <b>刷新间隔</b>
+                  <small>数值越小越实时，CPU 占用略高；趋势图横轴长度随之调整</small>
+                </span>
+                <select id="interval-select" title="刷新间隔">
+                  <option value="500">500 ms</option>
+                  <option value="1000" selected>1 s</option>
+                  <option value="2000">2 s</option>
+                  <option value="5000">5 s</option>
+                </select>
+              </label>
+            </div>
+          </section>
+
+          <!-- 高级采集 -->
+          <section class="card">
+            <header class="card-head">
+              <h2>高级采集</h2>
+              <span class="tag" id="adv-tag">检测中…</span>
+            </header>
+            <p class="setting-desc">
+              CPU 核心温度与联想机型风扇转速需要更高权限（内核驱动 / 管理员会话）。
+              以下是各采集通道的当前状态，随采样自动刷新。
+            </p>
+            <div class="adv-status" id="adv-status"></div>
+            <p class="hint hidden" id="thermal-hint"></p>
+            <p class="tip-muted-note hidden" id="tip-muted-note">
+              已永久关闭主页面上的 PawnIO 安装提醒。
+              <button class="link-btn" id="tip-unmute" type="button">重新开启</button>
+            </p>
+          </section>
+        </div>
       </main>
 
       <footer class="statusbar">

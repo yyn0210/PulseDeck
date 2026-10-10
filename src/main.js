@@ -105,6 +105,10 @@ function render(s) {
   chart.draw();
   netChart.push({ rx: s.net.rxBytesPerSec, tx: s.net.txBytesPerSec });
   netChart.draw();
+
+  // 设置页可见时才刷新高级采集状态，避免在监控页做无谓 DOM 写入
+  if (!viewSettings.classList.contains("hidden")) renderAdvanced();
+  else renderPawnioTip();
 }
 
 function renderHeader(s) {
@@ -115,6 +119,7 @@ function renderHeader(s) {
   setText("uptime", fmtUptime(s.system.uptimeSecs));
   setText("proc-count", s.system.processCount.toLocaleString("zh-CN"));
   setText("sample-interval", `${s.sampleIntervalMs} ms`);
+  setText("sample-tag", `${s.sampleIntervalMs} ms`);
   setText("status-left", `已更新 ${fmtClock(s.tsMs)}`);
 }
 
@@ -301,6 +306,102 @@ async function refreshHardwareStatus() {
   } catch (e) {
     hwStatus = null;
   }
+}
+
+/** 设置页「高级采集」区块：把各采集通道的当前状态摆出来（只读，操作按钮在下方 hint 里）。
+ * 数据来自 pawnio_status / hardware_status，采样时每 10 拍才更新一次，这里仅做映射。 */
+function renderAdvanced() {
+  const box = document.getElementById("adv-status");
+  if (!box) return;
+
+  const items = [];
+  if (pawnio) {
+    items.push(
+      pawnio.installed
+        ? { state: "ok", label: "PawnIO 驱动", value: "已安装 · 可读取 CPU 核心温度" }
+        : {
+            state: "warn",
+            label: "PawnIO 驱动",
+            value: pawnio.reason || "未安装 · CPU 核心温度不可用",
+          },
+    );
+  }
+  if (hwStatus && hwStatus.isLenovo) {
+    items.push(
+      hwStatus.lenovoFanReady
+        ? { state: "ok", label: "厂商风扇通道", value: "已启用 · 可读取风扇转速" }
+        : { state: "warn", label: "厂商风扇通道", value: "待启用 · 读取风扇转速需要管理员权限" },
+    );
+  } else if (hwStatus) {
+    items.push({ state: "idle", label: "厂商风扇通道", value: "非联想机型 · 走通用通道" });
+  }
+
+  const rows = items.length
+    ? items
+    : [{ state: "idle", label: "检测中", value: "正在读取各采集通道状态…" }];
+
+  box.innerHTML = rows
+    .map(
+      (it) => `<div class="adv-item ${it.state}">
+        <i class="adv-dot" aria-hidden="true"></i>
+        <span class="adv-text"><b>${esc(it.label)}</b><small>${esc(it.value)}</small></span>
+      </div>`,
+    )
+    .join("");
+
+  const pending = items.filter((it) => it.state === "warn").length;
+  setText("adv-tag", items.length ? (pending ? `${pending} 项待处理` : "全部就绪") : "检测中…");
+
+  // 「永久关闭」了主页面提醒时，在这里给一条改回来的入口，避免变成单向门
+  const mutedNote = document.getElementById("tip-muted-note");
+  if (mutedNote) mutedNote.classList.toggle("hidden", !tipMutedForever);
+}
+
+/* ---------------- 主页面顶部提示条 ---------------- */
+
+/* PawnIO 未安装时，在监控页顶部提醒用户去设置页安装/启用。
+ * 只提醒、不代劳——真正的安装入口在设置页「高级采集」，避免主页面弹 UAC。
+ * 点「×」后由用户选：仅本次（不落盘）/ 永久关闭（落 localStorage）。 */
+const TIP_MUTE_KEY = "wm.pawnioTipMuted";
+
+function readTipMuted() {
+  try {
+    return localStorage.getItem(TIP_MUTE_KEY) === "1";
+  } catch (e) {
+    return false; // 隐私模式等场景不可读，按「未永久关闭」处理
+  }
+}
+
+function writeTipMuted(muted) {
+  try {
+    if (muted) localStorage.setItem(TIP_MUTE_KEY, "1");
+    else localStorage.removeItem(TIP_MUTE_KEY);
+  } catch (e) {
+    /* 不可写就只在本次运行内生效（tipMutedForever 已改） */
+  }
+}
+
+/** 用户选了「永久关闭」——跨启动生效 */
+let tipMutedForever = readTipMuted();
+/** 用户选了「仅本次」——只挡本次运行 */
+let tipClosedThisRun = false;
+
+/** 展开 / 收起确认态（点「×」之后出现的那三个按钮） */
+function setTipConfirm(on) {
+  const el = document.getElementById("tipbar");
+  if (el) el.classList.toggle("tipbar--confirm", on);
+}
+
+function renderPawnioTip() {
+  const el = document.getElementById("tipbar");
+  if (!el) return;
+  // 已经在设置页了就没必要再提醒（那里的「高级采集」直接给了状态与入口）
+  const onMonitorPage = viewSettings.classList.contains("hidden");
+  const missing = !!pawnio && !pawnio.installed;
+  const show = missing && !tipMutedForever && !tipClosedThisRun && onMonitorPage;
+  el.classList.toggle("hidden", !show);
+  // 提示条收起时把确认态一并复位，下次出现仍是「去设置 / ×」
+  if (!show) setTipConfirm(false);
 }
 
 function renderThermal(thermal, cpu, gpu) {
@@ -617,6 +718,69 @@ async function initSettings() {
     if (state.latest) renderNet(state.latest.net);
   });
 }
+
+/* ---------------- 页面切换：监控 / 设置 ---------------- */
+
+const viewMonitor = document.getElementById("view-monitor");
+const viewSettings = document.getElementById("view-settings");
+const navButtons = Array.from(document.querySelectorAll(".nav-btn"));
+const VIEW_KEY = "wm.activeView";
+
+function switchView(name) {
+  const toSettings = name === "settings";
+  viewMonitor.classList.toggle("hidden", toSettings);
+  viewSettings.classList.toggle("hidden", !toSettings);
+  navButtons.forEach((b) => b.classList.toggle("active", b.dataset.view === name));
+  // 进入设置页时立刻补一次采集通道状态（不必等下一拍）
+  if (toSettings) renderAdvanced();
+  // 提示条只在监控页出现，切页后立即同步
+  renderPawnioTip();
+  try {
+    localStorage.setItem(VIEW_KEY, toSettings ? "settings" : "monitor");
+  } catch (e) {
+    /* 隐私模式等场景不可写，忽略即可 */
+  }
+}
+
+navButtons.forEach((b) => b.addEventListener("click", () => switchView(b.dataset.view)));
+
+/* 提示条交互：
+ * 「去设置」跳设置页；「×」展开确认态；确认态里选「永久关闭 / 仅本次 / 取消」 */
+function onTipClick(id, fn) {
+  const el = document.getElementById(id);
+  if (el) el.addEventListener("click", fn);
+}
+
+onTipClick("tipbar-action", () => switchView("settings"));
+onTipClick("tipbar-close", () => setTipConfirm(true));
+onTipClick("tipbar-forget", () => {
+  tipMutedForever = true;
+  writeTipMuted(true);
+  renderPawnioTip();
+});
+onTipClick("tipbar-once", () => {
+  tipClosedThisRun = true;
+  renderPawnioTip();
+});
+onTipClick("tipbar-cancel", () => setTipConfirm(false));
+
+// 设置页「高级采集」里可以把「永久关闭」改回来
+onTipClick("tip-unmute", () => {
+  tipMutedForever = false;
+  writeTipMuted(false);
+  renderAdvanced();
+});
+
+// 记住上次停留的页面（默认监控页）
+(function restoreView() {
+  let saved = "monitor";
+  try {
+    saved = localStorage.getItem(VIEW_KEY) || "monitor";
+  } catch (e) {
+    /* 忽略 */
+  }
+  switchView(saved === "settings" ? "settings" : "monitor");
+})();
 
 /* 启动：设置异步加载，同时先渲染首屏再开启轮询
  * （不用 top-level await，保持构建目标兼容） */
