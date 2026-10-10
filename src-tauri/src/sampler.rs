@@ -9,7 +9,7 @@ use crate::model::{
     percent_of, BatteryInfo, CpuInfo, DiskInfo, GpuInfo, MemoryInfo, NetIface, NetInfo, ProcInfo,
     Snapshot, SystemInfo, ThermalInfo,
 };
-use crate::{battery, gpu, thermal, win32};
+use crate::{battery, fan, gpu, thermal, win32};
 
 /// 进程榜单长度
 const TOP_N: usize = 8;
@@ -22,6 +22,7 @@ struct Inner {
     net: Networks,
     gpu: gpu::GpuProbe,
     thermal: thermal::ThermalProbe,
+    fan: fan::FanProbe,
 }
 
 pub struct Sampler {
@@ -45,6 +46,7 @@ impl Sampler {
                 net: Networks::new_with_refreshed_list(),
                 gpu: gpu::GpuProbe::new(),
                 thermal: thermal::ThermalProbe::new(),
+                fan: fan::FanProbe::new(),
             }),
             latest: Mutex::new(Snapshot::default()),
             last_tick: Mutex::new(Instant::now()),
@@ -87,6 +89,7 @@ impl Sampler {
             net,
             gpu,
             thermal,
+            fan,
         } = &mut *inner;
 
         sys.refresh_cpu_all();
@@ -95,7 +98,7 @@ impl Sampler {
         disks.refresh(true);
         net.refresh(true);
 
-        let cpu = collect_cpu(sys);
+        let mut cpu = collect_cpu(sys);
         let memory = collect_memory(sys);
         let disks_out = collect_disks(disks, elapsed_secs);
         let battery_info: BatteryInfo = battery::collect();
@@ -106,6 +109,12 @@ impl Sampler {
         if gpu_out.temp_c.is_none() {
             gpu_out.temp_c = thermal_out.gpu_temp_c;
         }
+
+        // 风扇：NVML/PDH 都没有时，用 WMI（OHM/旧版 LHM、ACPI）兜底。
+        // 注意风扇读数与温度是两套独立通道，不能因为温度有值就假定风扇也有。
+        let fans = fan.sample(gpu_out.devices.len());
+        apply_cpu_fan(&mut cpu, &fans);
+        apply_gpu_fan(&mut gpu_out, &fans);
 
         Snapshot {
             ts_ms: now_ms(),
@@ -181,11 +190,61 @@ fn collect_cpu(sys: &System) -> CpuInfo {
         physical_cores: System::physical_core_count().unwrap_or(cpus.len()),
         per_core,
         freq_mhz,
+        // 风扇由 fan.rs 在采样后期补齐（WMI 查询慢、且独立于 CPU 采集）
+        fan_rpm: None,
+        fan_pct: None,
+        fan_source: String::new(),
         top_cpu,
         top_mem,
     };
     info.normalize();
     info
+}
+
+/// 把风扇报告里的 CPU 部分写进 `CpuInfo`
+fn apply_cpu_fan(cpu: &mut CpuInfo, fans: &fan::FanReport) {
+    cpu.fan_rpm = fans.cpu.rpm;
+    cpu.fan_pct = fans.cpu.pct;
+    cpu.fan_source = fans.cpu.source.clone();
+}
+
+/// 把风扇报告里的 GPU 部分写进 `GpuInfo` 与各设备（仅在原生通道没给值时才覆盖）
+fn apply_gpu_fan(gpu: &mut GpuInfo, fans: &fan::FanReport) {
+    for (i, dev) in gpu.devices.iter_mut().enumerate() {
+        let Some(r) = fans.gpus.get(i) else { continue };
+        if dev.fan_rpm.is_none() {
+            dev.fan_rpm = r.rpm;
+        }
+        if dev.fan_pct.is_none() {
+            dev.fan_pct = r.pct;
+        }
+    }
+    // 汇总口径与 aggregate 一致：取第一个真正有风扇读数的设备。
+    // （aggregate 已按主卡填过一遍，这里只补它没填到的情形。）
+    let Some(m) = gpu
+        .devices
+        .iter()
+        .find(|d| d.fan_rpm.is_some() || d.fan_pct.is_some())
+    else {
+        return;
+    };
+    if gpu.fan_rpm.is_none() {
+        gpu.fan_rpm = m.fan_rpm;
+    }
+    if gpu.fan_pct.is_none() {
+        gpu.fan_pct = m.fan_pct;
+    }
+    if gpu.fan_source.is_empty() {
+        gpu.fan_source = if m.source == "nvml" {
+            "NVIDIA 驱动".to_string()
+        } else {
+            fans.gpus
+                .iter()
+                .find(|r| r.any())
+                .map(|r| r.source.clone())
+                .unwrap_or_default()
+        };
+    }
 }
 
 fn collect_memory(sys: &System) -> MemoryInfo {

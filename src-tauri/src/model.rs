@@ -49,6 +49,12 @@ pub struct CpuInfo {
     pub per_core: Vec<f32>,
     /// 当前最高主频（MHz）
     pub freq_mhz: u64,
+    /// CPU 风扇转速（RPM）。Windows 无公开通道，仅装 OHM/旧版 LHM 时才有值。
+    pub fan_rpm: Option<f32>,
+    /// CPU 风扇占空比（%）。ACPI 的「相对速度」归到这里（单位不可信为 RPM）。
+    pub fan_pct: Option<f32>,
+    /// CPU 风扇数据来源；读不到时为空字符串
+    pub fan_source: String,
     pub top_cpu: Vec<ProcInfo>,
     pub top_mem: Vec<ProcInfo>,
 }
@@ -116,7 +122,10 @@ pub struct GpuDevice {
     pub temp_c: Option<f32>,
     /// 整卡功耗（W）
     pub power_w: Option<f32>,
+    /// 风扇占空比（%）。NVML 的 `fan_speed` 返回的就是百分比。
     pub fan_pct: Option<f32>,
+    /// 风扇真实转速（RPM）。仅当驱动/传感器给出可信 RPM 时才有值，否则为 None。
+    pub fan_rpm: Option<f32>,
     /// 数据来源：nvml = NVIDIA 驱动；pdh = Windows 性能计数器
     pub source: String,
 }
@@ -133,6 +142,12 @@ pub struct GpuInfo {
     pub mem_pct: Option<f32>,
     pub temp_c: Option<f32>,
     pub power_w: Option<f32>,
+    /// 主卡风扇占空比（%），来源同 devices
+    pub fan_pct: Option<f32>,
+    /// 主卡风扇转速（RPM）
+    pub fan_rpm: Option<f32>,
+    /// GPU 风扇数据来源；读不到时为空字符串
+    pub fan_source: String,
     /// nvml / pdh / pdh-warming / unavailable
     pub source: String,
 }
@@ -169,6 +184,8 @@ impl GpuInfo {
             self.mem_pct = m.mem_pct;
             self.temp_c = m.temp_c;
             self.power_w = m.power_w;
+            self.fan_pct = m.fan_pct;
+            self.fan_rpm = m.fan_rpm;
         } else {
             self.usage_pct = None;
         }

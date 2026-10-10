@@ -4,6 +4,7 @@ import {
   fmtBytes,
   fmtClock,
   fmtDuration,
+  fmtFan,
   fmtFreq,
   fmtRate,
   fmtUptime,
@@ -65,8 +66,12 @@ async function tick() {
     state.latest = snap;
     state.failures = 0;
     banner.classList.add("hidden");
-    // 低频刷新 PawnIO 状态（每 10 拍一次）：用户可能在外部装上或卸掉驱动
-    if (state.ticks++ % 10 === 0) await refreshPawnioStatus();
+    // 低频刷新 PawnIO / 高级采集状态（每 10 拍一次）：
+    // 用户可能在外部装上或卸掉驱动，提权桥接也可能刚刚起来或退出
+    if (state.ticks++ % 10 === 0) {
+      await refreshPawnioStatus();
+      await refreshHardwareStatus();
+    }
     render(snap);
   } catch (err) {
     state.failures += 1;
@@ -92,7 +97,7 @@ function render(s) {
   renderGpu(s.gpu, s.thermal);
   renderBattery(s.battery, s.thermal);
   renderNet(s.net);
-  renderThermal(s.thermal);
+  renderThermal(s.thermal, s.cpu, s.gpu);
   renderDisks(s.disks);
   renderProcs(s.cpu);
 
@@ -120,8 +125,21 @@ function setRing(id, percent) {
   el.style.strokeDashoffset = String(CIRCUMFERENCE * (1 - p / 100));
 }
 
-function renderCpu(cpu) {
-  setRing("cpu-ring", cpu.usageTotal);
+/** 给风扇数值挂一个来源提示（鼠标悬停可见）。
+ * 来源字符串来自后端 `FanReading::source`，例如「联想 EC（上限 4500 RPM）」。
+ * 空字符串或缺失时清掉 title，避免出现空白浮层。 */
+function setFanSource(id, source) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const text = typeof source === "string" ? source.trim() : "";
+  if (text) {
+    el.title = `来源：${text}`;
+  } else {
+    el.removeAttribute("title");
+  }
+}
+
+function renderCpu(cpu) {  setRing("cpu-ring", cpu.usageTotal);
   setText("cpu-value", cpu.usageTotal.toFixed(1));
   setText("cpu-brand", cpu.brand);
   setText(
@@ -129,6 +147,8 @@ function renderCpu(cpu) {
     `${cpu.physicalCores} 核 / ${cpu.logicalCores} 线程`,
   );
   setText("cpu-freq", fmtFreq(cpu.freqMhz));
+  setText("cpu-fan", fmtFan(cpu.fanRpm, cpu.fanPct));
+  setFanSource("cpu-fan", cpu.fanSource);
   setText("cpu-tag", `峰值 ${Math.max(...cpu.perCore, 0).toFixed(0)}%`);
   renderCores(cpu.perCore);
 }
@@ -190,6 +210,7 @@ function renderGpu(gpu, thermal) {
     setText("gpu-mem", "--");
     setText("gpu-temp", "--");
     setText("gpu-power", "--");
+    setText("gpu-fan", "--");
     setText("gpu-tag", "无可用数据源");
     return;
   }
@@ -210,6 +231,9 @@ function renderGpu(gpu, thermal) {
   );
   setText("gpu-temp", gpu.tempC != null ? `${gpu.tempC.toFixed(0)} °C` : "--");
   setText("gpu-power", fmtWatts(gpu.powerW));
+  // 风扇：优先真实 RPM，其次驱动给的占空比；拿不到就是 --
+  setText("gpu-fan", fmtFan(gpu.fanRpm, gpu.fanPct));
+  setFanSource("gpu-fan", gpu.fanSource);
 
   const sourceLabel = { nvml: "NVIDIA 驱动", pdh: "Windows 计数器", "pdh-warming": "正在初始化" };
   const multi = gpu.devices.length > 1 ? ` · ${gpu.devices.length} 块显卡` : "";
@@ -253,9 +277,14 @@ function renderNet(net) {
 /* ---------------- 温度 ---------------- */
 
 /* PawnIO 是读 CPU 核心温度必需的内核驱动（需用户授权安装），
- * 未安装时后端不会自动提权，而是在这里引导用户点一下按钮。 */
+ * 未安装时后端不会自动提权，而是在这里引导用户点一下按钮。
+ *
+ * 联想机型读「风扇转速」同样需要管理员权限（走同一个提权子进程），
+ * 所以下面的「启用」按钮复用它——一次 UAC 同时搞定温度与风扇。 */
 let pawnio = null;
 let pawnioBusy = false;
+/* 高级采集通道状态（联想风扇 / PawnIO），由 hardware_status 返回 */
+let hwStatus = null;
 
 async function refreshPawnioStatus() {
   try {
@@ -266,16 +295,68 @@ async function refreshPawnioStatus() {
   }
 }
 
-function renderThermal(thermal) {
+async function refreshHardwareStatus() {
+  try {
+    hwStatus = await invoke("hardware_status");
+  } catch (e) {
+    hwStatus = null;
+  }
+}
+
+function renderThermal(thermal, cpu, gpu) {
   setText("cpu-temp", thermal.cpuTempC != null ? `${thermal.cpuTempC.toFixed(0)} °C` : "--");
-  // GPU 温度由 GPU 卡片负责展示，这里只在不可用时补一次提示
   const el = document.getElementById("thermal-hint");
-  if (thermal.available || thermal.cpuTempC != null) {
-    el.classList.add("hidden");
+
+  // 温度不可用 → 优先走原来那套提示（可能带「安装 PawnIO」按钮）
+  if (!thermal.available && thermal.cpuTempC == null) {
+    el.classList.remove("hidden");
+    renderThermalUnavailable(el, thermal);
     return;
   }
-  el.classList.remove("hidden");
 
+  // 温度正常，但风扇读不到 → 给一条风扇说明（不挡温度）
+  const cpuFanMissing = cpu && cpu.fanRpm == null && cpu.fanPct == null;
+  const gpuFanMissing =
+    gpu && gpu.available && gpu.fanRpm == null && gpu.fanPct == null;
+  if (cpuFanMissing && gpuFanMissing) {
+    el.classList.remove("hidden");
+    renderFanHint(el, gpuFanMissing);
+    return;
+  }
+  if (cpuFanMissing) {
+    el.classList.remove("hidden");
+    renderFanHint(el, false);
+    return;
+  }
+
+  el.classList.add("hidden");
+}
+
+/* 风扇读不到时的说明。CPU 与 GPU 的成因不同，分开写清楚。
+ * 联想机型另有一套说明 + 「启用」按钮（需要管理员权限）。 */
+const FAN_HINT_CPU =
+  "CPU 风扇转速读不到：转速由主板 EC / Super I/O 控制，Windows 未向用户态程序公开；" +
+  "装 OpenHardwareMonitor（或旧版 LibreHardwareMonitor ≤ 0.9.4）后本工具会自动读到。";
+const FAN_HINT_GPU =
+  "GPU 风扇转速读不到：显卡驱动未上报（笔记本独显的风扇通常由 EC 控制，NVIDIA 驱动读数为 N/A）。";
+const FAN_HINT_BOTH = `${FAN_HINT_CPU} ${FAN_HINT_GPU}`;
+const FAN_HINT_LENOVO =
+  "本机是联想设备，风扇转速可通过厂商 ACPI 通道读取，但需要管理员权限。点击「启用」并按提示确认一次即可。";
+
+function renderFanHint(el, both) {
+  // 联想机型：给出「启用」按钮（读风扇要走提权子进程）
+  if (hwStatus && hwStatus.isLenovo && hwStatus.needsEnable) {
+    el.innerHTML =
+      `<span class="hint-text">${esc(FAN_HINT_LENOVO)}</span>` +
+      `<button class="hint-btn" id="hw-enable"${pawnioBusy ? " disabled" : ""}>` +
+      `${pawnioBusy ? "启用中…" : "启用"}</button>`;
+    document.getElementById("hw-enable").addEventListener("click", enableElevated);
+    return;
+  }
+  el.innerHTML = `<span class="hint-text">${esc(both ? FAN_HINT_BOTH : FAN_HINT_CPU)}</span>`;
+}
+
+function renderThermalUnavailable(el, thermal) {
   const msg = thermal.hint || "未检测到温度传感器";
   // 只有「确实没装 PawnIO」且「随包安装器在」才给安装入口：
   // 已经装上却读不到温度属于另一类问题（多半是用户取消了 UAC），按钮没有意义。
@@ -297,7 +378,7 @@ function renderThermal(thermal) {
 async function installPawnIo() {
   if (pawnioBusy) return;
   pawnioBusy = true;
-  if (state.latest) renderThermal(state.latest.thermal);
+  if (state.latest) renderThermal(state.latest.thermal, state.latest.cpu, state.latest.gpu);
   try {
     await invoke("install_pawnio");
   } catch (e) {
@@ -310,7 +391,30 @@ async function installPawnIo() {
     if (pawnio && pawnio.installed) break;
   }
   pawnioBusy = false;
-  if (state.latest) renderThermal(state.latest.thermal);
+  if (state.latest) renderThermal(state.latest.thermal, state.latest.cpu, state.latest.gpu);
+}
+
+/** 请求后端启用高级采集（联想机型读风扇转速需要管理员权限）。
+ * 与安装 PawnIO 一样走提权子进程，用户只需在 UAC 上点一次「是」。 */
+async function enableElevated() {
+  if (pawnioBusy) return;
+  pawnioBusy = true;
+  if (state.latest) renderThermal(state.latest.thermal, state.latest.cpu, state.latest.gpu);
+  try {
+    await invoke("enable_elevated");
+  } catch (e) {
+    console.error("请求启用高级采集失败:", e);
+  }
+  // 轮询直到桥接把风扇读数写出来（或超时）
+  const deadline = Date.now() + 120000;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 2000));
+    await refreshHardwareStatus();
+    if (hwStatus && hwStatus.lenovoFanReady) break;
+  }
+  await refreshPawnioStatus();
+  pawnioBusy = false;
+  if (state.latest) renderThermal(state.latest.thermal, state.latest.cpu, state.latest.gpu);
 }
 
 function renderBattery(bat, thermal) {

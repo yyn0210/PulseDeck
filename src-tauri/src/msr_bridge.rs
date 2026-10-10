@@ -8,8 +8,14 @@
 //! 为什么用文件而不是管道：`ShellExecuteExW` + `runas` **无法重定向 stdout**，
 //! 传文件是最省事、也最不容易出问题的跨权限数据通道（覆盖写 + 原子改名）。
 //!
-//! 生命周期：子进程每秒检查父进程是否还活着（`OpenProcess`），父进程一退出就自行收尾，
+//! 生命周期：子进程**启动时打开一次父进程句柄并一直持有**，之后每秒用
+//! `WaitForSingleObject` 等待它——父进程一退出（进程对象被置为有信号态）就自行收尾，
 //! 因此**不需要**跨权限 `TerminateProcess`——那在普通权限下大概率会失败。
+//!
+//! ⚠️ **不要退回「`OpenProcess` 打不开 = 父进程已退出」的判据**：进程退出后只要有别的
+//! 句柄还引用它的进程对象（WebView2 之类很常见），`OpenProcess(父PID)` 会**继续成功**，
+//! 于是子进程永远以为父进程还活着、应用关了它还在后台跑（本项目 2026-10-10 修的
+//! 「残留进程」就是这个）。详见 [`ParentWatch`]。
 //!
 //! 关于 PawnIO 的安装（`--install-if-missing`）：读温度必须先有 PawnIO 内核驱动，
 //! 而装驱动要弹 UAC。为了**不白弹 UAC、也绝不静默装驱动**，规则是：
@@ -23,6 +29,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+
+use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_TIMEOUT};
+use windows::Win32::System::Threading::{
+    OpenProcess, WaitForSingleObject, PROCESS_ACCESS_RIGHTS, PROCESS_QUERY_LIMITED_INFORMATION,
+};
 
 use crate::pawnio::IntelTempReader;
 use crate::pawnio_setup::{self, Probe};
@@ -48,6 +59,23 @@ pub struct MsrState {
     pub source: String,
     /// 失败原因（成功时为 None）
     pub error: Option<String>,
+    /// 联想机型上的风扇转速：`FanID -> RPM`。
+    ///
+    /// 之所以搭桥接的便车：联想的 `LENOVO_FAN_METHOD` 实测**也要管理员权限**
+    /// （非提权调用返回 `WBEM_E_ACCESS_DENIED`），正好与 MSR 温度共用同一次 UAC。
+    /// 非联想机型为 `None`（不写字段，省得 JSON 里塞空对象）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lenovo_fans: Option<Vec<LenovoFan>>,
+}
+
+/// 一个联想风扇读数（桥接 → 主进程）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LenovoFan {
+    /// 联想逻辑风扇号：0 = CPU，1 = GPU
+    pub fan_id: u8,
+    /// 转速（RPM）
+    pub rpm: f32,
 }
 
 impl MsrState {
@@ -59,6 +87,7 @@ impl MsrState {
             tjmax_c: Some(tjmax),
             source: "Intel MSR (PawnIO)".to_string(),
             error: None,
+            lenovo_fans: None,
         }
     }
 
@@ -70,6 +99,7 @@ impl MsrState {
             tjmax_c: None,
             source: "Intel MSR (PawnIO)".to_string(),
             error: Some(msg),
+            lenovo_fans: None,
         }
     }
 }
@@ -112,6 +142,14 @@ pub fn read_fresh_state() -> Option<MsrState> {
     (age <= STALE_AFTER.as_secs()).then_some(st)
 }
 
+/// 只取联想风扇读数（`FanID -> RPM`），供 `vendor.rs` 使用。
+///
+/// 返回 `None` 表示「桥接没在跑 / 读数过期 / 本机不是联想」——三种情况上层
+/// 都按「厂商通道无数据」处理，不需要区分。
+pub fn read_fresh_fans() -> Option<Vec<LenovoFan>> {
+    read_fresh_state()?.lenovo_fans
+}
+
 /* ------------------------------ 子进程模式 ------------------------------ */
 
 /// 若命令行带 `--pawnio-bridge` 就进桥接模式（不启动 Tauri），返回值表示是否已接管
@@ -144,6 +182,15 @@ pub fn run_if_requested() -> bool {
 
 /// 桥接主循环：读温度 → 写状态 → 父进程没了就退出
 fn run_bridge(module: &Path, out: &Path, parent_pid: u32, install_if_missing: bool) {
+    // 先守望父进程：拿不到句柄（父进程已经不在了 / 权限不足）就立刻收尾。
+    // 看不住父进程的桥接进程只会变成没人管的孤儿，不如不跑。
+    let Some(parent) = ParentWatch::attach(parent_pid) else {
+        log_err(&format!(
+            "无法打开父进程句柄（pid={parent_pid}），桥接进程立即退出"
+        ));
+        return;
+    };
+
     // 非 Intel 平台读这些 MSR 没有意义，直接给出明确结论，避免反复无效尝试
     if !is_intel_cpu() {
         let st = MsrState::err("当前 CPU 不是 Intel，MSR 直读暂不支持（已回退 ACPI / PDH 温度源）".to_string());
@@ -157,10 +204,6 @@ fn run_bridge(module: &Path, out: &Path, parent_pid: u32, install_if_missing: bo
     let mut last_err = String::from("尚未开始读取");
 
     loop {
-        if !process_alive(parent_pid) {
-            break;
-        }
-
         if reader.is_none() && is_intel_cpu() {
             match std::fs::read(module) {
                 Ok(blob) => match IntelTempReader::open(&blob) {
@@ -176,7 +219,7 @@ fn run_bridge(module: &Path, out: &Path, parent_pid: u32, install_if_missing: bo
             }
         }
 
-        let state = match reader.as_ref() {
+        let mut state = match reader.as_ref() {
             Some(r) => match r.package_temp() {
                 Ok(t) => MsrState::ok(t, r.tjmax()),
                 Err(e) => {
@@ -186,10 +229,110 @@ fn run_bridge(module: &Path, out: &Path, parent_pid: u32, install_if_missing: bo
             },
             None => MsrState::err(last_err.clone()),
         };
+        // 风扇与温度彼此独立，各自采各自的；合进同一份状态文件（同一次 UAC 的收益）
+        state.lenovo_fans = sample_lenovo_fans();
         write_state(out, &state);
 
-        std::thread::sleep(Duration::from_millis(1000));
+        // 这一等既当采样节拍（1 Hz），也是「父进程是否还活着」的唯一判据：
+        // 父进程一结束，它的进程对象即被置为有信号态，这里立刻返回 false 并收尾。
+        if !parent.alive_after(1000) {
+            break;
+        }
     }
+}
+
+/* --------------------------- 父进程守望（句柄等待法） --------------------------- */
+
+/// `SYNCHRONIZE`（0x0010_0000）：`windows` crate 只导出了 FileSystem 的版本，
+/// 进程访问权里没有，这里自己补一个——有了它才能对进程句柄 `WaitForSingleObject`。
+const SYNCHRONIZE: PROCESS_ACCESS_RIGHTS = PROCESS_ACCESS_RIGHTS(0x0010_0000);
+
+/// 父进程的守望句柄。
+///
+/// **为什么不能每秒 `OpenProcess` 试探**：Windows 上进程退出后，只要还有任何句柄引用它的
+/// 进程对象（实测：被 WebView2 之类留下句柄时很常见），`OpenProcess(pid)` 会**继续成功**，
+/// 「打不开 = 已退出」这个判据就失效了——子进程会永远以为父进程还活着，应用关了它还赖在
+/// 后台。本机实测：应用退出后 `OpenProcess(旧父PID, PROCESS_QUERY_LIMITED_INFORMATION)`
+/// 仍返回有效句柄（err=0），而对一个不存在的 PID 才返回 `ERROR_INVALID_PARAMETER`(87)。
+///
+/// 正确做法是**启动时打开一次句柄并一直持有**：
+/// * 句柄一直在手 → 进程对象不会被回收，PID 也不会被系统复用给别人，不存在「PID 复用」误判；
+/// * 进程一结束，进程对象即被置为有信号态 → `WaitForSingleObject` 立刻返回
+///   `WAIT_OBJECT_0`，与进程对象是否已被回收无关（正好覆盖上面的「僵尸句柄」情形）。
+struct ParentWatch(HANDLE);
+
+impl ParentWatch {
+    /// 打开父进程句柄。返回 `None` 表示此刻就打不开（父进程已不在 / 权限不足）。
+    fn attach(pid: u32) -> Option<Self> {
+        if pid == 0 {
+            return None;
+        }
+        let access = SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION;
+        match unsafe { OpenProcess(access, false, pid) } {
+            Ok(handle) if !handle.is_invalid() => Some(Self(handle)),
+            _ => None,
+        }
+    }
+
+    /// 至多等 `timeout_ms`：父进程**仍在运行**返回 `true`，已结束返回 `false`。
+    ///
+    /// 等待出错也返回 `false`——宁可少跑一个后台进程，也不要留孤儿。
+    fn alive_after(&self, timeout_ms: u32) -> bool {
+        matches!(
+            unsafe { WaitForSingleObject(self.0, timeout_ms) },
+            WAIT_TIMEOUT
+        )
+    }
+}
+
+impl Drop for ParentWatch {
+    fn drop(&mut self) {
+        let _ = unsafe { CloseHandle(self.0) };
+    }
+}
+
+/// 桥接主循环（风扇部分）：联想机型上读一次所有风扇转速。
+///
+/// 单独抽出来是因为它**与 MSR 温度彼此独立**——非 Intel 平台照样可能有联想风扇，
+/// 反之 Intel 机型若是其它品牌则没有联想风扇。
+///
+/// 说明：`wmi::lenovo_fans()` 内部依赖 `is_lenovo()` 与 `lenovo_fan_instance()`，
+/// 它们各自有 `OnceLock` 缓存，不会每秒都去查 `Win32_ComputerSystem`。
+fn sample_lenovo_fans() -> Option<Vec<LenovoFan>> {
+    if !crate::wmi::is_lenovo() {
+        return None;
+    }
+    let fans = crate::wmi::lenovo_fans();
+    if fans.is_empty() {
+        return None;
+    }
+    Some(
+        fans.into_iter()
+            .map(|(fan_id, rpm)| LenovoFan { fan_id, rpm })
+            .collect(),
+    )
+}
+
+#[cfg(test)]
+impl MsrState {
+    /// 测试用：构造一份只带风扇读数的最小状态（其余字段填占位值）
+    pub fn for_test(fans: Option<Vec<LenovoFan>>) -> Self {
+        Self {
+            ts: now_secs(),
+            parent_pid: 0,
+            cpu_temp_c: None,
+            tjmax_c: None,
+            source: "test".to_string(),
+            error: None,
+            lenovo_fans: fans,
+        }
+    }
+}
+
+/// 测试用入口：暴露私有的 `sample_lenovo_fans`（提权诊断需要）
+#[cfg(test)]
+pub fn sample_lenovo_fans_for_test() -> Option<Vec<LenovoFan>> {
+    sample_lenovo_fans()
 }
 
 /// 设备打开失败时，用探测结果把原因说具体——「没装驱动」是可操作的，值得单独提示
@@ -243,23 +386,6 @@ fn write_state(out: &Path, state: &MsrState) {
     }
 }
 
-/// 父进程是否还活着（PID 为 0 时无从判断，按「活着」处理）
-fn process_alive(pid: u32) -> bool {
-    use windows::Win32::Foundation::CloseHandle;
-    use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
-    if pid == 0 {
-        return true;
-    }
-    // 提权进程去打开普通权限的父进程是允许的（高完整性级别可以打开低级别）
-    match unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) } {
-        Ok(handle) => {
-            let _ = unsafe { CloseHandle(handle) };
-            true
-        }
-        Err(_) => false,
-    }
-}
-
 /// 依据 CPU 品牌粗判是否 Intel（`brand` 形如 "12th Gen Intel(R) Core(TM) i9-12900K"）
 fn is_intel_cpu() -> bool {
     let mut sys = sysinfo::System::new_all();
@@ -276,6 +402,10 @@ fn is_intel_cpu() -> bool {
 ///
 /// 未装 PawnIO 时**不拉起**——拉起来只会报错、还白弹一次 UAC；
 /// 这种情况改由界面引导用户点「安装 PawnIO」（见 [`install_and_start`]）。
+///
+/// 联想机型例外：即便没装 PawnIO，风扇转速也**必须**靠提权桥接才能读。
+/// 但同样不在启动路径上弹 UAC（用户没点任何东西就弹框很唐突），
+/// 改由界面提示里的「启用」按钮触发 [`launch_with_install`]。
 pub fn ensure_started(resource_dir: &Path, prompted: &AtomicBool) {
     if prompted.swap(true, Ordering::Relaxed) {
         return;
@@ -299,6 +429,14 @@ pub fn ensure_started(resource_dir: &Path, prompted: &AtomicBool) {
 pub fn install_and_start(resource_dir: &Path) {
     // 已经装好（例如用户自己装过）就按普通路径拉起，别再去跑安装器
     launch_bridge(resource_dir, !pawnio_setup::probe().installed());
+}
+
+/// 用户点了界面上的「启用」：无条件拉起桥接进程。
+///
+/// `install_if_missing` 为 `true` 时授权桥接顺手静默安装 PawnIO——
+/// 只在调用方确认「安装器在 + 驱动缺失」时传 true，避免无谓地跑安装器。
+pub fn launch_with_install(resource_dir: &Path, install_if_missing: bool) {
+    launch_bridge(resource_dir, install_if_missing);
 }
 
 /// 用 `runas` 提权 + 隐藏窗口拉起自己（`nShow = 0` 即 SW_HIDE）
@@ -376,5 +514,47 @@ fn log_err(msg: &str) {
     {
         use std::io::Write;
         let _ = writeln!(f, "[{}] {msg}", now_secs());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::{Command, Stdio};
+
+    /// 回归：被守望的进程结束之后，`ParentWatch` 必须立刻发现——**即使它的进程对象还没被回收**。
+    ///
+    /// 这个用例正是 2026-10-10 那个「应用关了还有残留进程」的复现条件：`std::process::Child`
+    /// 自己持有一个进程句柄，所以子进程被杀掉之后它的进程对象**依然存在**，
+    /// 「`OpenProcess` 打不开 = 已退出」的旧判据在这里恒为「还活着」；而句柄等待会立刻返回
+    /// `WAIT_OBJECT_0`。**不要**把它改回 OpenProcess 试探。
+    #[test]
+    fn parent_watch_notices_exit_even_when_object_survives() {
+        let mut child = Command::new("cmd")
+            .args(["/c", "ping", "-n", "30", "127.0.0.1"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("启动测试子进程失败");
+        let pid = child.id();
+
+        let watch = ParentWatch::attach(pid).expect("应能打开子进程句柄");
+        assert!(watch.alive_after(0), "子进程仍在运行时应判定为存活");
+
+        child.kill().expect("结束测试子进程失败");
+        let _ = child.wait(); // 回收进程；此时进程对象尚未被回收（句柄还在我们手里）
+
+        assert!(
+            !watch.alive_after(1000),
+            "子进程已结束，守望必须发现（否则就是「残留进程」bug 复发）"
+        );
+    }
+
+    /// `attach` 对不存在的 PID 必须失败——否则桥接会对着一个空 PID 无限守望。
+    #[test]
+    fn attach_fails_for_missing_pid() {
+        assert!(ParentWatch::attach(0).is_none());
+        // 999999 在本机一定不存在（`OpenProcess` 返回 ERROR_INVALID_PARAMETER）
+        assert!(ParentWatch::attach(999_999).is_none());
     }
 }

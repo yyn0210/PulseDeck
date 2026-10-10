@@ -11,6 +11,10 @@
 
   // `?mock=1&pawnio=missing` 用来预览「未装 PawnIO、引导用户安装」这一状态
   const pawnioMissing = params.get("pawnio") === "missing";
+  // `?mock=1&fan=on` 用来预览「风扇能读到」的排版（默认是读不到的诚实降级态）
+  const fanOn = params.get("fan") === "on";
+  // `?mock=1&lenovo=1` 用来预览「联想机型、风扇待启用」的提示与「启用」按钮
+  const lenovo = params.get("lenovo") === "1";
 
   let tick = 0;
   const jitter = (base, amp) => Math.max(0, base + (Math.random() - 0.5) * amp);
@@ -44,6 +48,9 @@
         physicalCores: 14,
         perCore,
         freqMhz: rnd(2980, 700),
+        fanRpm: fanOn ? rnd(2400, 260) : null,
+        fanPct: null,
+        fanSource: fanOn ? "root\\OpenHardwareMonitor" : "",
         topCpu: [
           { pid: 11212, name: "chrome.exe", cpuUsage: 18.4, memoryBytes: 812 * 1024 * 1024 },
           { pid: 4512, name: "Code.exe", cpuUsage: 12.1, memoryBytes: 640 * 1024 * 1024 },
@@ -128,6 +135,9 @@
         memPct: 30,
         tempC: jitter(48, 6),
         powerW: jitter(11.4, 8),
+        fanPct: fanOn ? rnd(38, 12) : null,
+        fanRpm: null,
+        fanSource: fanOn ? "NVIDIA 驱动" : "",
         devices: [
           {
             index: 0,
@@ -138,7 +148,8 @@
             memPct: 30,
             tempC: jitter(48, 6),
             powerW: jitter(11.4, 8),
-            fanPct: 32,
+            fanPct: fanOn ? rnd(38, 12) : null,
+            fanRpm: null,
             source: "nvml",
           },
         ],
@@ -242,8 +253,21 @@
               : "PawnIO 已安装",
             installerAvailable: pawnioMissing,
           });
+        case "hardware_status":
+          return Promise.resolve({
+            isLenovo: lenovo,
+            pawnioInstalled: !pawnioMissing,
+            pawnioReason: pawnioMissing ? "未安装 PawnIO" : "PawnIO 已安装",
+            installerAvailable: pawnioMissing,
+            // 预演「已启用」的状态：风扇能读到就说明提权桥接在工作
+            elevatedActive: fanOn,
+            lenovoFanReady: lenovo && fanOn,
+            needsEnable: lenovo && !fanOn,
+          });
         case "install_pawnio":
           return Promise.resolve("（预览模式）已请求安装 PawnIO");
+        case "enable_elevated":
+          return Promise.resolve("（预览模式）已请求启用高级采集");
         default:
           return Promise.resolve(null);
       }

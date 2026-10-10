@@ -6,6 +6,7 @@ use std::thread;
 use std::time::Duration;
 
 mod battery;
+mod fan;
 mod gpu;
 mod model;
 mod msr_bridge;
@@ -14,6 +15,7 @@ mod pawnio_setup;
 mod pdh;
 mod sampler;
 mod thermal;
+mod vendor;
 mod win32;
 mod wmi;
 
@@ -109,6 +111,37 @@ fn pawnio_status(app: tauri::AppHandle) -> serde_json::Value {
     })
 }
 
+/// 高级采集通道的就位情况（CPU 温度 / 风扇转速都需要提权子进程）。
+///
+/// 前端据此决定提示文案：
+/// * `elevatedActive`：提权桥接是否正在提供新鲜读数（说明用户已授权且正常工作）；
+/// * `missing`：还差什么（`pawnio` = 没装驱动；`lenovoFan` = 联想通道未启用）。
+#[tauri::command]
+fn hardware_status(app: tauri::AppHandle) -> serde_json::Value {
+    let probe = pawnio_setup::probe();
+    let installer_ready = app
+        .path()
+        .resource_dir()
+        .map(|dir| pawnio_setup::setup_path(&dir).is_file())
+        .unwrap_or(false);
+
+    // 桥接是否在跑：以「有没有属于本进程的新鲜读数」为准
+    let fresh = msr_bridge::read_fresh_state().filter(|st| st.parent_pid == std::process::id());
+    let elevated_active = fresh.is_some();
+    let fan_ready = fresh.as_ref().is_some_and(|st| st.lenovo_fans.is_some());
+
+    serde_json::json!({
+        "isLenovo": wmi::is_lenovo(),
+        "pawnioInstalled": probe.installed(),
+        "pawnioReason": probe.describe(),
+        "installerAvailable": installer_ready,
+        "elevatedActive": elevated_active,
+        "lenovoFanReady": fan_ready,
+        // 需要用户点「启用」的场景：联想机型但还没拿到风扇
+        "needsEnable": wmi::is_lenovo() && !fan_ready,
+    })
+}
+
 /// 用户点击「安装 PawnIO」。
 ///
 /// 真正的安装在**提权子进程**里完成（它顺带读温度），所以全过程只弹一次 UAC。
@@ -129,6 +162,26 @@ fn install_pawnio(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<S
     std::thread::spawn(move || msr_bridge::install_and_start(&resource_dir));
 
     Ok("已请求安装 PawnIO，请在 Windows 弹窗中点「是」，随后 CPU 温度会自动出现".to_string())
+}
+
+/// 用户点击「启用」（联想机型读风扇转速需要管理员权限）。
+///
+/// 不装 PawnIO、只拉起提权桥接读风扇；若 PawnIO 也缺失且安装器在，顺带装上——
+/// 反正已经弹过一次 UAC 了，不必让用户点两次。
+#[tauri::command]
+fn enable_elevated(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<String, String> {
+    let resource_dir = app
+        .path()
+        .resource_dir()
+        .map_err(|e| format!("取不到应用资源目录：{e}"))?;
+
+    state.bridge_prompted.store(false, Ordering::Relaxed);
+    // 只有安装器确实在、且驱动确实缺失时，才授权桥接安装
+    let install = pawnio_setup::setup_path(&resource_dir).is_file()
+        && !pawnio_setup::probe().installed();
+    std::thread::spawn(move || msr_bridge::launch_with_install(&resource_dir, install));
+
+    Ok("已请求启用高级采集，请在 Windows 弹窗中点「是」".to_string())
 }
 
 /// 托盘 Id：用于后续找回这个托盘实例
@@ -335,7 +388,9 @@ pub fn run() {
             get_autostart,
             set_autostart,
             pawnio_status,
-            install_pawnio
+            hardware_status,
+            install_pawnio,
+            enable_elevated
         ])
         .setup({
             let setup_prompted = bridge_prompted.clone();
@@ -392,6 +447,141 @@ mod diag {
         use std::io::Write;
         print!("[{tag}] ");
         let _ = std::io::stdout().flush();
+    }
+
+    /// 是否运行在提升（管理员）权限下
+    fn is_elevated() -> bool {
+        use windows::Win32::Foundation::HANDLE;
+        use windows::Win32::Security::{
+            GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
+        };
+        use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+        unsafe {
+            let mut token = HANDLE::default();
+            if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).is_err() {
+                return false;
+            }
+            let mut elev = TOKEN_ELEVATION::default();
+            let mut ret_len = 0u32;
+            let ok = GetTokenInformation(
+                token,
+                TokenElevation,
+                Some(&mut elev as *mut _ as *mut core::ffi::c_void),
+                std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+                &mut ret_len,
+            );
+            let _ = windows::Win32::Foundation::CloseHandle(token);
+            ok.is_ok() && elev.TokenIsElevated != 0
+        }
+    }
+
+    /// 把诊断结果同时写到 `%TEMP%\wb_lenovo_diag.txt`，便于提权运行后回读
+    fn dump_to_file(lines: &[String]) {
+        use std::io::Write;
+        let path = std::env::temp_dir().join("wb_lenovo_diag.txt");
+        if let Ok(mut f) = std::fs::File::create(&path) {
+            let _ = writeln!(f, "elevated = {}", is_elevated());
+            for l in lines {
+                let _ = writeln!(f, "{l}");
+            }
+        }
+        println!(">>> 诊断已写入 {}", path.display());
+    }
+
+    /// 端到端验证「风扇**每拍都刷新**」（这是修过的 bug，别再退回节流）。
+    ///
+    /// 连续采样若干次并打印每拍读数：修好之后相邻两拍的风扇转速几乎总在变
+    /// （真机风扇每秒有几个 RPM 的抖动）；而带 30s 节流的旧实现会让这里**次次相同**。
+    ///
+    /// 需要提权桥接正在运行（界面上点过「启用」）才有数据；桥接没起来时只打印 `--`，
+    /// 此时不做断言。
+    ///
+    /// 用法：`cargo test --lib diag::fan_refresh -- --nocapture`
+    #[test]
+    fn fan_refresh() {
+        const N: usize = 6;
+        let mut probe = super::fan::FanProbe::new();
+        let mut seen = Vec::new();
+        for i in 0..N {
+            let r = probe.sample(1);
+            let cur = (r.cpu.rpm, r.gpus.first().and_then(|g| g.rpm));
+            println!("[{i}] cpu={:?} gpu={:?}", cur.0, cur.1);
+            seen.push(cur);
+            if i + 1 < N {
+                // 比桥接的写入周期（1s）略长，确保每拍都跨过一次写入
+                std::thread::sleep(std::time::Duration::from_millis(1100));
+            }
+        }
+        let has_data = seen.iter().any(|(c, _)| c.is_some());
+        let changes = seen.windows(2).filter(|w| w[0] != w[1]).count();
+        println!("{N} 次采样，拿到读数 = {has_data}，相邻两拍发生变化 = {changes} 次");
+        if has_data {
+            assert!(
+                changes > 0,
+                "风扇读数在 {N} 拍内一次都没变——多半是被节流回退了（旧实现固定 30s 缓存）"
+            );
+        }
+    }
+
+    /// WMI 建连开销对照：逐个调用（每风扇一次连接）vs 批量调用（共用一次连接）。
+    ///
+    /// 非提权下 `ExecMethod` 会被拒，但**建连 / 取类定义 / 取方法签名**这几步照走，
+    /// 而它们正是这条链路里最贵的部分（`ConnectServer`），所以这个对照足以说明问题。
+    ///
+    /// 用法：`cargo test --lib diag::lenovo_conn_cost -- --nocapture`
+    #[test]
+    fn lenovo_conn_cost() {
+        const ROUNDS: u32 = 10;
+        let t = std::time::Instant::now();
+        for _ in 0..ROUNDS {
+            for id in 0..=3u8 {
+                let _ = super::wmi::lenovo_fan_rpm(id);
+            }
+        }
+        let old = t.elapsed();
+        let t = std::time::Instant::now();
+        for _ in 0..ROUNDS {
+            let _ = super::wmi::lenovo_fans();
+        }
+        let new = t.elapsed();
+        println!(
+            "逐个(每风扇一次连接) = {old:?} / 批量(共用一次连接) = {new:?}  →  x{:.2}",
+            old.as_secs_f64() / new.as_secs_f64().max(f64::MIN_POSITIVE)
+        );
+    }
+
+    /// 联想通道诊断（可提权运行，结果落盘到 %TEMP%\wb_lenovo_diag.txt）
+    ///
+    /// 用法：`cargo test --lib diag::lenovo_elev -- --nocapture`
+    /// 提权：`Start-Process <test-exe> -ArgumentList 'diag::lenovo_elev','--nocapture' -Verb RunAs`
+    #[test]
+    fn lenovo_elev() {
+        let mut lines = Vec::new();
+        flush("elev-check");
+        lines.push(format!("is_elevated = {}", is_elevated()));
+        lines.push(format!("is_lenovo = {}", super::wmi::is_lenovo()));
+
+        for (label, res) in super::wmi::probe_exec_paths(
+            "root\\WMI",
+            "LENOVO_FAN_METHOD",
+            "Fan_GetCurrentFanSpeed",
+            &[("FanID", 0u8)],
+        ) {
+            lines.push(format!("{label}: {res}"));
+        }
+        lines.push(format!("lenovo_fans = {:?}", super::wmi::lenovo_fans()));
+
+        // 端到端：走一遍桥接写状态 + 主进程读回，确认 JSON 往返没问题
+        let fans = super::msr_bridge::sample_lenovo_fans_for_test();
+        lines.push(format!("bridge sample_lenovo_fans = {fans:?}"));
+        let json = serde_json::to_string(&super::msr_bridge::MsrState::for_test(fans.clone()))
+            .unwrap_or_default();
+        lines.push(format!("state json = {json}"));
+
+        dump_to_file(&lines);
+        for l in &lines {
+            println!("{l}");
+        }
     }
 
     #[test]
@@ -547,6 +737,93 @@ mod diag {
             snap.net.tx_bytes_per_sec
         );
         println!("sampler dropped OK");
+    }
+
+    /// 风扇转速：各通道分别探测，确认到底是哪一层缺数据
+    ///
+    /// 预期（2026-10-09 本机实测）：NVML `fan_speed` 为 N/A（笔记本独显由 EC 控制）、
+    /// LHM/OHM 命名空间不存在、`Win32_Fan` 有实例但 `DesiredSpeed` 为空。
+    ///
+    /// 2026-10-10 追加：联想机型应能通过 `LENOVO_FAN_METHOD` 读到 RPM。
+    /// 联想 `LENOVO_FAN_METHOD` 类定义 dump：确认方法名与入参签名
+    #[test]
+    fn probe_lenovo_class() {
+        flush("mof");
+        match super::wmi::dump_class_mof("root\\WMI", "LENOVO_FAN_METHOD") {
+            Some(mof) => println!("{mof}"),
+            None => println!("取不到 LENOVO_FAN_METHOD 的 MOF"),
+        }
+        flush("props");
+        println!(
+            "Fan_GetCurrentFanSpeed in-params = {:?}",
+            super::wmi::dump_prop_names(
+                "root\\WMI",
+                "LENOVO_FAN_METHOD",
+                Some("Fan_GetCurrentFanSpeed")
+            )
+        );
+        println!(
+            "Fan_GetCurrentSensorTemperature in-params = {:?}",
+            super::wmi::dump_prop_names(
+                "root\\WMI",
+                "LENOVO_FAN_METHOD",
+                Some("Fan_GetCurrentSensorTemperature")
+            )
+        );
+        flush("exec-paths");
+        for (label, res) in super::wmi::probe_exec_paths(
+            "root\\WMI",
+            "LENOVO_FAN_METHOD",
+            "Fan_GetCurrentFanSpeed",
+            &[("FanID", 0u8)],
+        ) {
+            println!("  {label}: {res}");
+        }
+
+        flush("instances");
+        for cls in ["LENOVO_FAN_TABLE_DATA", "LENOVO_FAN_METHOD"] {
+            let rows = super::wmi::query(
+                "root\\WMI",
+                &format!("SELECT InstanceName, Active FROM {cls}"),
+                &["InstanceName", "Active"],
+            );
+            println!("  {cls} 实例 = {rows:?}");
+        }
+    }
+
+    #[test]
+    fn probe_fan() {
+        flush("nvml-fan");
+        if let Ok(nvml) = nvml_wrapper::Nvml::init() {
+            if let Ok(dev) = nvml.device_by_index(0) {
+                println!("fan_speed(pct) = {:?}", dev.fan_speed(0));
+                println!("fan_speed_rpm  = {:?}", dev.fan_speed_rpm(0));
+            }
+        } else {
+            println!("NVML 不可用");
+        }
+
+        flush("vendor");
+        println!("是否联想设备   = {}", super::wmi::is_lenovo());
+        println!("ACPI 实例名    = {:?}", super::wmi::lenovo_fan_instance());
+        println!("联想风扇上限   = {:?}", super::wmi::lenovo_fan_max_speed());
+        println!("联想风扇号     = {:?}", super::wmi::lenovo_fan_ids());
+        for id in super::wmi::lenovo_fan_ids() {
+            println!("  FanID={id} rpm = {:?}", super::wmi::lenovo_fan_rpm(id));
+        }
+        for id in 0..=5u8 {
+            println!("  SensorID={id} temp = {:?}", super::wmi::lenovo_sensor_temp(id));
+        }
+        println!("lenovo_fans    = {:?}", super::wmi::lenovo_fans());
+        println!("桥接风扇读数   = {:?}", super::msr_bridge::read_fresh_fans());
+
+        flush("wmi-fans");
+        println!("hardware_fans  = {:?}", super::wmi::hardware_fans());
+        println!("acpi_fans      = {:?}", super::wmi::acpi_fan_speeds());
+
+        flush("probe");
+        let mut probe = super::fan::FanProbe::new();
+        println!("report = {:?}", probe.sample(1));
     }
 
     /// 电池原始读数逐字段打印：判断「适配器功率读不到」到底卡在哪一层

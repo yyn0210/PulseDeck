@@ -8,9 +8,9 @@ Windows 桌面系统监控小工具，实时监控 **CPU / 内存 / 硬盘 / 电
 
 | 卡片 | 内容 |
 | --- | --- |
-| 处理器 | 总占用环形图、型号、物理核/线程数、当前主频、**温度**、每核负载网格 |
+| 处理器 | 总占用环形图、型号、物理核/线程数、当前主频、**温度**、**风扇转速**、每核负载网格 |
 | 内存 | 已用/总量、可用、已提交内存（Commit Charge）、页面文件 |
-| GPU | 占用环形图、型号、显存占用、温度、功耗；多卡时列出全部并取主卡汇总 |
+| GPU | 占用环形图、型号、显存占用、温度、功耗、**风扇转速**；多卡时列出全部并取主卡汇总 |
 | 电池 | 剩余电量、剩余/满充容量（Wh）、剩余续航、充满所需时间、充放电状态 |
 | 电源功率 | 电池实时功率（W，充入 / 输出 / 已接入未充电时给 0）、**CPU 封装功耗（W）**、电池状态、是否接入适配器 |
 | 网络 | 总下行/上行速率、累计流量、速率趋势折线（自适应量程）、每张网卡明细 |
@@ -51,6 +51,8 @@ Windows 桌面系统监控小工具，实时监控 **CPU / 内存 / 硬盘 / 电
 | 进程榜 | `sysinfo` (`System::refresh_processes`)，进程 CPU% 已 ÷逻辑核心数换算成「占总 CPU 算力」口径，与全局 CPU 一致 |
 | GPU 占用 / 显存 / **温度** / 功耗 | NVIDIA：NVML（`nvml-wrapper`，动态加载 nvml.dll） |
 | GPU 占用 / 显存（非 N 卡） | PDH `GPU Engine(*)\Utilization Percentage`、`GPU Adapter Memory(*)\Dedicated Usage` |
+| **GPU 风扇** | ① NVML `nvmlDeviceGetFanSpeed`（占空比 %，桌面 N 卡常有值）／`nvmlDeviceGetFanSpeedRPM`（真转速，视型号）；② 硬件监控软件的 WMI `Sensor(SensorType='Fan')`（RPM） |
+| **CPU 风扇** | ① **厂商私有通道（联想机型）**：WMI `root\WMI:LENOVO_FAN_METHOD.Fan_GetCurrentFanSpeed` → **RPM**（ACPI-WMI 映射，**需管理员**，由提权桥接子进程供数）；② 硬件监控软件（OpenHardwareMonitor / 旧版 LHM ≤ 0.9.4）的 WMI `Sensor(SensorType='Fan')` → **RPM**；③ WMI `Win32_Fan.DesiredSpeed`（ACPI，**绝大多数机器该字段为空**，有值也不保证是 RPM，仅当占空比展示） |
 | CPU 温度 | ① **PawnIO + Intel MSR**：直读片内 DTS 寄存器（`0x1A2` 取 TjMax，`0x1B1` 封装、`0x19C` 逐核心），最准；需管理员，由提权桥接子进程供数（见下方「CPU 温度」）；② 硬件监控软件（OpenHardwareMonitor / 旧版 LHM ≤ 0.9.4）的 WMI `Sensor` 表；③ WMI `root\wmi:MSAcpi_ThermalZoneTemperature`（ACPI 热区，联想 LegionZone 等厂商工具的通用兜底，**联想机型免装软件即可读到 CPU 热区**）；④ PDH `Thermal Zone Information(*)\Temperature`（含有效性校验） |
 | **CPU 封装功耗（W）** | PDH `\Energy Meter(*)\Power`（Intel / AMD RAPL，单位为 mW，取 `*_pkg` 实例） |
 | 电池百分比、充放电方向、充放电功率、剩余/满充容量、预估时间 | Win32 `CallNtPowerInformation(SystemBatteryState)` |
@@ -116,8 +118,15 @@ PawnIO 是一个**通用**内核驱动：它本身不含硬件逻辑，只负责
    用 `ShellExecuteExW` 的 `runas` 动词 + 隐藏窗口启动 —— 首次运行会弹**一次 UAC**；
 3. 它打开 `\\?\GLOBALROOT\Device\PawnIO`、载入模块、每秒读一次温度，把结果**原子写入**（临时文件 + 改名）
    那个 JSON；主进程只是读文件，因此完全不需要跨权限 IPC；
-4. 它每秒检查父进程是否存活，**父进程一退出就自行收尾** —— 不需要（也不该）在这里做跨权限
+4. 它**启动时打开一次父进程句柄并一直持有**，之后每秒用 `WaitForSingleObject` 等待它——
+   父进程一退出（进程对象被置为有信号态）就自行收尾 —— 不需要（也不该）在这里做跨权限
    `TerminateProcess`，那在普通权限下大概率会失败。
+
+> ⚠️ 判据**必须**是句柄等待，**不能**是「`OpenProcess` 打不开就算父进程退出」：Windows 上
+> 进程退出后只要有别的句柄还引用它的进程对象（WebView2 之类很常见），`OpenProcess(父PID)`
+> 会继续成功，子进程就会永远以为父进程活着、应用关了它还赖在后台（2026-10-10 修的
+> 「残留进程」正是此因）。详见 `msr_bridge.rs` 的 `ParentWatch` 与回归测试
+> `parent_watch_notices_exit_even_when_object_survives`。
 
 > 目前只内置了 Intel 模块，**AMD 平台暂不支持 MSR 直读**（会给出明确提示并回退 ACPI/PDH）。
 
@@ -150,7 +159,42 @@ Usage: PawnIOSetup.exe [-install] [-uninstall] [-unrestricted] [-debuginfo] [-si
 > 前置条件：**Windows 10 x64 1809（build 17763）及以上**；若系统已装更旧的 PawnIO，
 > 安装器会拒绝并要求先卸载——本工具不会强行覆盖，只把原始退出码回传给界面。
 
-**网络重复计数**：Windows 上同一张物理网卡会同时出现真实接口和 NDIS 过滤驱动两个条目
+**风扇转速**：这是个比温度更封闭的指标，**Windows 没有任何公开的用户态接口**。
+本工具的策略是「**能读到就报、读不到就明确说读不到**」，绝不拿占空比冒充转速：
+
+| 通道 | 覆盖情况 | 单位 |
+| --- | --- | --- |
+| **厂商私有（联想）** `root\WMI:LENOVO_FAN_METHOD.Fan_GetCurrentFanSpeed` | **联想机型有效**（ACPI-WMI 映射，**需管理员**，走提权桥接） | **RPM（可信）** |
+| NVML `nvmlDeviceGetFanSpeed` / `…FanSpeedRPM` | 桌面 N 卡常有值；**笔记本独显普遍报 `N/A`**（风扇由 EC 控制，驱动读不到） | %（占空比）/ RPM |
+| LHM / OHM 的 WMI `Sensor(SensorType='Fan')` | 需装 OpenHardwareMonitor 或旧版 LHM（≤ 0.9.4） | **RPM（可信）** |
+| ACPI `Win32_Fan.DesiredSpeed` | 类存在但**绝大多数机器该字段为空**；有值也不保证是 RPM | 相对速度 |
+
+前端展示口径：**优先真实 RPM，其次占空比 `%`，两者都没有才显示 `--`**，
+并在「偏好设置」卡片下方给出具体原因（CPU 与 GPU 的成因不同，分开说明）。
+
+**联想机型**：CPU 风扇可通过厂商私有的 **ACPI-WMI 通道**读取（联想官方 LegionZone 用的就是它），
+但实测**需要管理员权限**。本工具把它接进与 CPU 温度同一个**提权子进程**（一次 UAC 同时搞定两者），
+所以联想机型上温度与风扇是「一荣俱荣」的。检测到联想设备且风扇不可用时，
+界面会在提示区显示「**启用**」按钮，点击并确认一次 UAC 即可。
+
+> **刷新节奏**：风扇读数与 CPU 温度**同一个来源、同一个节拍**——桥接子进程 **1Hz** 写出，
+> 主进程**每拍直接读**（本地小文件，微秒级），界面跟着采样间隔走。
+> 主进程侧**没有任何时间窗缓存**：桥接每秒给一次，界面就每秒更新一次。
+> （采样间隔选 500 ms 时，风扇受桥接 1Hz 的产出速率限制，会呈现"两次一更新"，
+> 这是数据源的真实节拍，不是丢帧。）
+> 提权后本机实测 CPU 风扇 ≈ 2800 RPM、GPU 风扇 ≈ 2785 RPM（相邻两拍通常有 3~10 RPM 抖动）。
+
+> 本机（RTX 3060 Laptop + 12th Gen Intel）实测：`nvml.fan_speed(0)` 返回 `Err(InvalidArg)`、
+> `Win32_Fan.DesiredSpeed` 为空、未装 OHM/LHM → 通用通道全读不到；
+> 但**联想通道提权后可读到 CPU 风扇 ≈ 3007 RPM、GPU 风扇 ≈ 2978 RPM**。
+> 用 `cargo test -p win-monitor diag::probe_fan -- --nocapture` 可以复现通用通道的判断过程。
+>
+> CPU 侧还有个更深的现状：CPU 风扇在非联想机型上挂在主板 Super I/O / EC 上，即便是本工具已有的
+> PawnIO 通道也帮不上忙 —— 实测 `IntelMSR.bin` 只导出 `ioctl_read_msr` / `cpuid` / `msr_read` /
+> `get_arch`，**不含任何 EC 读取函数**。要拿真实 RPM 只能另配 Super I/O 模块（机型强相关），暂不引入。
+> 详见 `docs/LegionZone采集机制分析.md`。
+
+**网络重复计数**：Windows 上同一张网卡会同时出现真实接口和 NDIS 过滤驱动两个条目
 （本机 WLAN 与 WLAN-Huorong NDIS Filter 的累计流量完全相同），不去重会让汇总速率翻倍。
 采样时按 MAC / 累计流量相同识别并剔除重复项。
 
@@ -174,16 +218,19 @@ Usage: PawnIOSetup.exe [-install] [-uninstall] [-unrestricted] [-debuginfo] [-si
 │     ├─ lib.rs               Tauri 装配 + 托盘 + 采样线程 + 命令
 │     ├─ sampler.rs           采样编排（CPU/内存/磁盘/网络/进程/GPU/温度）
 │     ├─ gpu.rs               GPU：NVML 优先，PDH 兜底
+│     ├─ fan.rs               风扇转速：厂商私有(联想) → NVML → LHM/OHM WMI → ACPI，读不到就诚实降级
+│     ├─ vendor.rs            厂商私有通道的调度与结果挑选（读取桥接产出的 JSON）
 │     ├─ thermal.rs           CPU/GPU 温度 + CPU 封装功耗：多源探测 + 有效性过滤
 │     ├─ pdh.rs               PDH 性能计数器封装
-│     ├─ wmi.rs               WMI(COM) 查询封装（ACPI 热区、显卡名、OHM/旧版 LHM 传感器）
+│     ├─ wmi.rs               WMI(COM) 查询封装（ACPI 热区、显卡名、OHM/旧版 LHM 传感器、联想 ACPI-WMI 方法调用）
 │     ├─ pawnio.rs            PawnIO 驱动直连：载入模块、读 MSR、解 DTS 温度
 │     ├─ pawnio_setup.rs      PawnIO 探测（设备能否打开）+ 静默安装随包安装器
-│     ├─ msr_bridge.rs        提权子进程：读 MSR 并写 pawnio.json（主进程只读该文件）
+│     ├─ msr_bridge.rs        提权子进程：读 MSR + 联想风扇，写 pawnio.json（主进程只读该文件）
 │     ├─ battery.rs           电池读数整理
 │     ├─ win32.rs             Win32 薄封装（电源、内存提交量）
 │     └─ model.rs             与前端交换的数据模型
-└─ tools/make_icons.py        图标生成脚本（Pillow）
+├─ tools/make_icons.py        图标生成脚本（Pillow）
+└─ tools/verify_bridge_exit.py 验收脚本：桥接进程是否跟着父进程一起收尾（见「调试与自测」）
 ```
 
 ## 运行
@@ -234,6 +281,7 @@ cargo test -p win-monitor smoke::collect_once -- --nocapture
 cargo test -p win-monitor diag::nvml          -- --nocapture   # NVIDIA 驱动读数
 cargo test -p win-monitor diag::probe_gpu     -- --nocapture   # GPU 探测（NVML → PDH）
 cargo test -p win-monitor diag::probe_thermal -- --nocapture   # 温度 + CPU 封装功耗
+cargo test -p win-monitor diag::probe_fan     -- --nocapture   # 风扇转速（NVML / LHM/OHM / ACPI 逐层确认）
 cargo test -p win-monitor diag::probe_battery -- --nocapture   # 电池原始字段（SYSTEM_BATTERY_STATE / WMI）
 cargo test -p win-monitor diag::wmi           -- --nocapture   # WMI 连通性
 cargo test -p win-monitor diag::pawnio_msr    -- --nocapture   # PawnIO 设备 / 模块 / MSR 温度（提权运行才有意义）
@@ -241,6 +289,23 @@ cargo test -p win-monitor diag::pawnio_setup  -- --nocapture   # PawnIO 是否�
 ```
 
 WMI 逐步 HRESULT 日志：`WB_WMI_DIAG=1 cargo test -p win-monitor diag::wmi -- --nocapture`
+
+### 桥接进程会不会留成孤儿
+
+`msr_bridge.rs` 的存活判据有两条用例锁着（`cargo test -p win-monitor msr_bridge::tests`）。
+其中 `parent_watch_notices_exit_even_when_object_survives` 复刻了「进程已退出但进程对象还没被
+回收」的场景 —— 旧判据（`OpenProcess` 打不开才算退出）在这个场景下恒为「还活着」，
+就是 2026-10-10 那个「应用关了还有残留进程」的根因，**别把它改回去**。
+
+要看真实二进制（而不是测试里造的场面）的表现，跑验收脚本 —— 不弹 UAC、不开窗口：
+
+```bash
+npm run build             # 先出包，脚本读 src-tauri/target/release/win-monitor.exe
+python tools/verify_bridge_exit.py
+```
+
+它会拉起一个自己控制的假父进程 + 一个 `--pawnio-bridge` 实例，确认「父进程活着→桥接保持
+存活」「父进程结束→桥接 1 拍内自行退出」，并顺带打印旧判据在同一时刻的错误结论作对照。
 
 ## 可调项
 

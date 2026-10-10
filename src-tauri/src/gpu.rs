@@ -109,7 +109,15 @@ impl GpuProbe {
                 .map(|t| t as f32);
             // NVML 的功耗单位是 mW
             let power_w = dev.power_usage().ok().map(|mw| mw as f32 / 1000.0);
+            // fan_speed 返回的是**占空比百分比**（0-100），不是 RPM。
+            // 桌面卡上通常有值；笔记本独显风扇由 EC 控制，驱动返回 N/A（这里就是 Err → None）。
             let fan_pct = dev.fan_speed(0).ok().map(|v| v as f32);
+            // 个别型号/驱动能直接给 RPM；拿不到就是 None，不拿百分比硬凑成「转速」。
+            let fan_rpm = dev
+                .fan_speed_rpm(0)
+                .ok()
+                .map(|v| v as f32)
+                .filter(|v| *v > 0.0);
 
             out.push(GpuDevice {
                 index: i,
@@ -121,6 +129,7 @@ impl GpuProbe {
                 temp_c,
                 power_w,
                 fan_pct,
+                fan_rpm,
                 source: "nvml".to_string(),
             });
         }
@@ -216,7 +225,10 @@ impl GpuProbe {
                     mem_pct: None,
                     temp_c: None,
                     power_w: None,
+                    // PDH 没有任何风扇计数器（实测只有 GPU Engine / GPU Adapter Memory），
+                    // 兜底路径交给 fan.rs 的 WMI 通道，这里保持 None。
                     fan_pct: None,
+                    fan_rpm: None,
                     source: "pdh".to_string(),
                 }
             })

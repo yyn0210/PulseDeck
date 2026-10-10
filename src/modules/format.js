@@ -32,6 +32,30 @@ export function fmtPercent(v, digits = 1) {
   return `${Number(v).toFixed(digits)}%`;
 }
 
+/** 风扇真实转速（RPM）。读不到就返回 --，不拿占空比冒充转速。 */
+export function fmtRpm(rpm) {
+  if (rpm === null || rpm === undefined) return "--";
+  const v = Math.round(Number(rpm));
+  if (!Number.isFinite(v) || v <= 0) return "--";
+  return `${v.toLocaleString("zh-CN")} RPM`;
+}
+
+/** 风扇占空比（%），整数即可 —— 风扇转速百分比没必要带小数。 */
+export function fmtFanPct(pct) {
+  if (pct === null || pct === undefined) return "--";
+  return `${Math.round(Number(pct))}%`;
+}
+
+/**
+ * 风扇的统一展示：优先真实转速（RPM），没有就退回占空比（%），
+ * 两者都没有才是 `--`——这正是「拿不到数据时诚实降级」的落点。
+ */
+export function fmtFan(rpm, pct) {
+  const r = fmtRpm(rpm);
+  if (r !== "--") return r;
+  return fmtFanPct(pct);
+}
+
 export function fmtDuration(seconds) {
   if (!seconds || seconds <= 0 || seconds >= 0xffffffff) return "--";
   const s = Math.round(seconds);
