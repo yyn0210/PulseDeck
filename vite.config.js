@@ -1,5 +1,8 @@
 import { defineConfig } from "vite";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
+const rootDir = dirname(fileURLToPath(import.meta.url));
 const host = process.env.TAURI_DEV_HOST;
 
 export default defineConfig({
@@ -18,5 +21,12 @@ export default defineConfig({
     target: process.env.TAURI_ENV_PLATFORM === "windows" ? "chrome105" : "safari13",
     minify: !process.env.TAURI_ENV_DEBUG ? "esbuild" : false,
     sourcemap: !!process.env.TAURI_ENV_DEBUG,
+    rollupOptions: {
+      // 两个入口：主面板 index.html 与桌面宠物窗口 pet.html（后者由 Rust 侧按需创建）
+      input: {
+        main: resolve(rootDir, "index.html"),
+        pet: resolve(rootDir, "pet.html"),
+      },
+    },
   },
 });

@@ -13,6 +13,7 @@ mod msr_bridge;
 mod pawnio;
 mod pawnio_setup;
 mod pdh;
+mod pet;
 mod sampler;
 mod thermal;
 mod vendor;
@@ -32,6 +33,8 @@ pub struct AppState {
     close_to_tray: Arc<AtomicBool>,
     /// 本会话是否已尝试拉起「MSR 温度桥接」进程（防止反复弹 UAC）
     bridge_prompted: Arc<AtomicBool>,
+    /// 桌面宠物的配置（窗口是否存在的依据，落盘在 pet.json）
+    pet: pet::PetStore,
 }
 
 #[tauri::command]
@@ -65,6 +68,67 @@ fn get_runtime_config(state: State<'_, AppState>) -> serde_json::Value {
         "intervalMs": state.interval_ms.load(Ordering::Relaxed),
         "closeToTray": state.close_to_tray.load(Ordering::Relaxed),
     })
+}
+
+/* ---------------- 桌面宠物 ---------------- */
+
+/// 当前宠物配置（前端设置页据此回显）
+#[tauri::command]
+fn get_pet_config(state: State<'_, AppState>) -> pet::PetConfig {
+    state.pet.get()
+}
+
+/// 保存宠物配置并同步窗口（开就建、关就销毁）。
+///
+/// 返回清洗后的配置——非法指标会被剔除、至少保留一项、透明度夹到 0.3~1.0，
+/// 前端直接用返回值回显，避免界面与真实状态不一致。
+#[tauri::command]
+fn set_pet_config(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    config: pet::PetConfig,
+) -> Result<pet::PetConfig, String> {
+    let cfg = state.pet.set(config);
+    pet::sync_window(&app, &cfg).map_err(|e| format!("打开/关闭桌面宠物失败：{e}"))?;
+    Ok(cfg)
+}
+
+/// 宠物窗口专用读数：只给它会显示的几个数，不搬整份快照
+#[tauri::command]
+fn get_pet_metrics(state: State<'_, AppState>) -> pet::PetMetrics {
+    pet::metrics_from(&state.sampler.latest())
+}
+
+/// 宠物页面每秒报一次心跳。
+///
+/// 用途见 `pet::LAST_BEAT_MS`：设置页据此显示「运行中 / 未响应」，
+/// 排查「窗口在但没画出来」时可开 `WINMON_PET_TRACE=1` 落盘确认。
+#[tauri::command]
+fn pet_heartbeat(app: tauri::AppHandle) {
+    pet::record_beat(&app);
+}
+
+/// 宠物窗口的就绪状态：是否开着、页面心跳是否新鲜
+#[tauri::command]
+fn pet_status(app: tauri::AppHandle) -> serde_json::Value {
+    let open = app.get_webview_window(pet::WINDOW_LABEL).is_some();
+    let age = pet::beat_age_ms();
+    // 采样间隔最大 5s，宠物页面固定 1s 心跳，3s 内没消息就认为没在跑
+    let alive = open && age.is_some_and(|ms| ms < 3000);
+    serde_json::json!({
+        "windowOpen": open,
+        "heartbeatAgeMs": age,
+        "alive": alive,
+    })
+}
+
+/// 双击宠物时呼出主窗口（主窗口可能正藏在托盘里）
+#[tauri::command]
+fn show_main_window(app: tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
 }
 
 /// 是否已写进开机自启
@@ -288,7 +352,7 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
 /// release 走 `windows_subsystem = "windows"`，没有控制台，panic 信息会直接消失，
 /// 出问题时全靠这个文件定位。位置：%LOCALAPPDATA%\WinMonitor\crash.log
 fn install_crash_logger() {
-    let dir = crash_dir();
+    let dir = app_dir();
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let line = format!(
@@ -312,7 +376,9 @@ fn install_crash_logger() {
     }));
 }
 
-fn crash_dir() -> std::path::PathBuf {
+/// 应用数据目录：崩溃日志、桌面宠物配置等运行时文件都放这里
+/// 位置：%LOCALAPPDATA%\WinMonitor
+fn app_dir() -> std::path::PathBuf {
     std::env::var_os("LOCALAPPDATA")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(std::env::temp_dir)
@@ -336,6 +402,9 @@ pub fn run() {
     let interval_ms = Arc::new(AtomicU32::new(1000));
     // 默认开启「关闭后常驻托盘」
     let close_to_tray = Arc::new(AtomicBool::new(true));
+    // 宠物配置从磁盘恢复：上次开着这次就直接出现在桌面上，不必等主窗口推配置过来
+    let pet = pet::PetStore::load();
+    let pet_at_startup = pet.get();
 
     {
         let sampler = sampler.clone();
@@ -378,6 +447,7 @@ pub fn run() {
             interval_ms,
             close_to_tray,
             bridge_prompted: bridge_prompted.clone(),
+            pet,
         })
         .invoke_handler(tauri::generate_handler![
             get_snapshot,
@@ -390,12 +460,28 @@ pub fn run() {
             pawnio_status,
             hardware_status,
             install_pawnio,
-            enable_elevated
+            enable_elevated,
+            get_pet_config,
+            set_pet_config,
+            get_pet_metrics,
+            pet_heartbeat,
+            pet_status,
+            show_main_window
         ])
         .setup({
             let setup_prompted = bridge_prompted.clone();
             move |app| {
                 build_tray(app.handle())?;
+
+                // 恢复桌面宠物窗口（配置里 enabled=true 时才建）。
+                // setup() 里直接建即可——曾怀疑「事件循环未就绪导致渲染冻结」，
+                // 2026-10-11 排查确认那只是测试环境假象（WorkBuddy 沙箱注入
+                // tsbx.dll 导致 WebView2 browser 进程崩溃，与创建时机无关）。
+                if pet_at_startup.enabled {
+                    if let Err(e) = pet::sync_window(&app.handle(), &pet_at_startup) {
+                        eprintln!("恢复桌面宠物失败：{e}");
+                    }
+                }
 
                 // 后台拉起「MSR 温度桥接」子进程（提权 + 隐藏窗口），不阻塞主窗口启动。
                 // 资源目录来自 Tauri 的 Resource 目录（由 bundle.resources 打进安装包），

@@ -1246,6 +1246,108 @@ select option:hover {
   background: #fff;
 }
 
+/* ---------------- 设置页：桌面宠物 ---------------- */
+
+.pet-rows-setting {
+  margin-top: 10px;
+}
+
+/* 显示内容：多选胶囊 */
+.chip-group {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 11px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  background: var(--panel-strong);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.chip:hover {
+  color: var(--text);
+}
+
+.chip input {
+  margin: 0;
+  accent-color: var(--cpu);
+}
+
+/* 选中态由 JS 打 is-on（不依赖 :has，兼容老一点的 WebView2） */
+.chip.is-on {
+  color: #dbe7ff;
+  background: rgba(79, 140, 255, 0.16);
+  border-color: rgba(79, 140, 255, 0.45);
+}
+
+.range-wrap {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.pet-opacity {
+  width: 132px;
+  accent-color: var(--cpu);
+}
+
+.pet-opacity-out {
+  min-width: 36px;
+  text-align: right;
+  font-size: 11px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 温度 → 颜色刻度：让用户看懂宠物为什么变色 */
+.pet-legend {
+  margin-top: 12px;
+}
+
+.pet-legend-bar {
+  height: 8px;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    #3b9dff 0%,
+    #22d3a5 22%,
+    #a3d94a 45%,
+    #f5c451 66%,
+    #ff9f43 84%,
+    #ff5f6d 100%
+  );
+}
+
+.pet-legend-scale {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 4px;
+  font-size: 10px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.pet-legend-note {
+  margin: 6px 0 0;
+  font-size: 10.5px;
+  color: var(--text-faint);
+  line-height: 1.5;
+}
+
 .hint {
   margin: 6px 0 0;
   font-size: 11px;

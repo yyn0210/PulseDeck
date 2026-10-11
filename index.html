@@ -332,6 +332,83 @@
             </div>
           </section>
 
+          <!-- 桌面宠物 -->
+          <section class="card">
+            <header class="card-head">
+              <h2>桌面宠物</h2>
+              <span class="tag" id="pet-tag">已关闭</span>
+            </header>
+            <p class="setting-desc">
+              在桌面上放一只小宠物，实时显示你勾选的指标。窗口置顶、无边框、不进任务栏，
+              可以拖到任意位置；双击宠物会呼出主面板。
+            </p>
+            <div class="settings-grid">
+              <label class="switch-row">
+                <span class="switch-text">
+                  <b>启用桌面宠物</b>
+                  <small>关闭后宠物窗口立即消失；主面板最小化到托盘时宠物依然在桌面上</small>
+                </span>
+                <input type="checkbox" id="opt-pet" />
+                <i class="switch" aria-hidden="true"></i>
+              </label>
+              <div class="adv-item idle" id="pet-status">
+                <i class="adv-dot" aria-hidden="true"></i>
+                <span class="adv-text">
+                  <b>宠物窗口</b>
+                  <small id="pet-status-text">已关闭</small>
+                </span>
+              </div>
+            </div>
+            <div class="setting-rows pet-rows-setting">
+              <div class="setting-row">
+                <span class="setting-text">
+                  <b>显示内容</b>
+                  <small>按顺序排列，至少保留一项</small>
+                </span>
+                <div class="chip-group" id="pet-metrics">
+                  <label class="chip">
+                    <input type="checkbox" value="cpu" /><span>CPU 使用率</span>
+                  </label>
+                  <label class="chip">
+                    <input type="checkbox" value="mem" /><span>内存使用率</span>
+                  </label>
+                  <label class="chip">
+                    <input type="checkbox" value="gpu" /><span>GPU 使用率</span>
+                  </label>
+                </div>
+              </div>
+              <label class="setting-row">
+                <span class="setting-text">
+                  <b>不透明度</b>
+                  <small>数值越低越不挡视线，最低 30%</small>
+                </span>
+                <span class="range-wrap">
+                  <input
+                    type="range"
+                    id="pet-opacity"
+                    class="pet-opacity"
+                    min="30"
+                    max="100"
+                    step="5"
+                    value="100"
+                  />
+                  <output id="pet-opacity-out" class="pet-opacity-out">100%</output>
+                </span>
+              </label>
+            </div>
+            <!-- 颜色刻度：说明「宠物的颜色是怎么来的」，避免用户看到变色不理解 -->
+            <div class="pet-legend">
+              <div class="pet-legend-bar" aria-hidden="true"></div>
+              <div class="pet-legend-scale">
+                <span>≤38℃</span><span>50</span><span>63</span><span>74</span><span>84</span
+                ><span>≥94℃</span>
+              </div>
+              <p class="pet-legend-note" id="pet-legend-note">
+                身体颜色随 CPU 温度变化：蓝（凉爽）→ 绿（舒适）→ 黄 → 橙 → 红（过热，会冒汗）。
+              </p>
+            </div>
+          </section>
+
           <!-- 高级采集 -->
           <section class="card">
             <header class="card-head">

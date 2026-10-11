@@ -15,6 +15,9 @@
   const fanOn = params.get("fan") === "on";
   // `?mock=1&lenovo=1` 用来预览「联想机型、风扇待启用」的提示与「启用」按钮
   const lenovo = params.get("lenovo") === "1";
+  // 桌面宠物：`?mock=1&hot=1` 预览过热态（冒汗 + 红色）；`?mock=1&nogpu=1` 预览读不到 GPU 占用
+  const hot = params.get("hot") === "1";
+  const noGpu = params.get("nogpu") === "1";
 
   let tick = 0;
   const jitter = (base, amp) => Math.max(0, base + (Math.random() - 0.5) * amp);
@@ -221,6 +224,8 @@
   }
 
   const settings = { autostart: false, closeToTray: true };
+  // 桌面宠物：预览模式下不真的开窗，只把配置存起来，供 pet.html?mock=1 读取
+  let petConfig = { enabled: false, metrics: ["cpu", "mem", "gpu"], opacity: 1 };
 
   window.__TAURI_INTERNALS__ = {
     invoke(cmd, args) {
@@ -264,6 +269,39 @@
             lenovoFanReady: lenovo && fanOn,
             needsEnable: lenovo && !fanOn,
           });
+        case "get_pet_config":
+          return Promise.resolve(petConfig);
+        case "set_pet_config": {
+          const next = Object.assign({}, petConfig, args.config || {});
+          // 复刻后端的清洗规则：过滤非法指标、至少保留一项、透明度夹到 0.3~1.0
+          const keys = ["cpu", "mem", "gpu"];
+          next.metrics = (next.metrics || []).filter((m) => keys.includes(m));
+          if (!next.metrics.length) next.metrics = ["cpu"];
+          next.opacity = Math.min(1, Math.max(0.3, Number(next.opacity) || 1));
+          petConfig = next;
+          return Promise.resolve(petConfig);
+        }
+        case "get_pet_metrics": {
+          const temp = pawnioMissing ? null : hot ? jitter(93, 3) : jitter(58, 26);
+          return Promise.resolve({
+            cpuPct: jitter(28, 30),
+            memPct: jitter(62, 8),
+            gpuPct: noGpu ? null : jitter(24, 30),
+            hasGpu: !noGpu,
+            cpuTempC: temp,
+            colorSource: temp == null ? "usage" : "temp",
+          });
+        }
+        case "pet_heartbeat":
+          return Promise.resolve(null);
+        case "pet_status":
+          return Promise.resolve({
+            windowOpen: petConfig.enabled,
+            heartbeatAgeMs: petConfig.enabled ? 400 : null,
+            alive: petConfig.enabled,
+          });
+        case "show_main_window":
+          return Promise.resolve(null);
         case "install_pawnio":
           return Promise.resolve("（预览模式）已请求安装 PawnIO");
         case "enable_elevated":

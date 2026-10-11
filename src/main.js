@@ -107,8 +107,12 @@ function render(s) {
   netChart.draw();
 
   // 设置页可见时才刷新高级采集状态，避免在监控页做无谓 DOM 写入
-  if (!viewSettings.classList.contains("hidden")) renderAdvanced();
-  else renderPawnioTip();
+  if (!viewSettings.classList.contains("hidden")) {
+    renderAdvanced();
+    refreshPetStatus();
+  } else {
+    renderPawnioTip();
+  }
 }
 
 function renderHeader(s) {
@@ -719,6 +723,143 @@ async function initSettings() {
   });
 }
 
+/* ---------------- 设置：桌面宠物 ---------------- */
+
+/* 宠物配置三件套：开不开、显示哪些指标、整体不透明度。
+ *
+ * 分工：前端只负责「改配置 + 本地缓存」，窗口的创建/销毁由后端 `set_pet_config` 完成——
+ * 这样主面板最小化到托盘时宠物依然在桌面上，也不存在两个窗口抢窗口句柄的问题。
+ *
+ * 后端会清洗配置（去掉非法指标、至少保留一项、透明度夹到 0.3~1.0），
+ * 所以每次提交都用**返回值**回显，避免界面与实际状态不一致。 */
+const PET_KEY = "wm.petConfig";
+const PET_FALLBACK = { enabled: false, metrics: ["cpu", "mem", "gpu"], opacity: 1 };
+
+const petSwitch = document.getElementById("opt-pet");
+const petMetricBox = document.getElementById("pet-metrics");
+const petOpacity = document.getElementById("pet-opacity");
+const petOpacityOut = document.getElementById("pet-opacity-out");
+
+const petStatusRow = document.getElementById("pet-status");
+const petStatusText = document.getElementById("pet-status-text");
+
+let petCfg = { ...PET_FALLBACK };
+/** 宠物窗口的运行状态（由 pet_status 每拍刷新，仅设置页可见时查） */
+let petAlive = null;
+
+/** 窗口状态行：把「开着」和「真的在渲染」分开说——
+ * 透明无边框窗口一旦没渲染出来，屏幕上就是「什么都没有」，用户很难判断是关了还是坏了。 */
+function renderPetStatus() {
+  if (!petStatusRow) return;
+  const on = !!petCfg.enabled;
+  let state = "idle";
+  let text = "已关闭";
+  if (on && petAlive) {
+    const { windowOpen, alive, heartbeatAgeMs } = petAlive;
+    if (!windowOpen) {
+      state = "warn";
+      text = "窗口未创建 · 保存设置或重启一次应用即可";
+    } else if (alive) {
+      state = "ok";
+      text = `运行中 · ${Math.max(1, Math.round((heartbeatAgeMs ?? 1000) / 1000))}s 内心跳`;
+    } else {
+      state = "warn";
+      text = "窗口在，但页面没有心跳 · 多为 WebView 未渲染，可重启应用试试";
+    }
+  } else if (on) {
+    text = "检测中…";
+  }
+  petStatusRow.className = `adv-item ${state}`;
+  setText("pet-status-text", text);
+}
+
+async function refreshPetStatus() {
+  try {
+    petAlive = await invoke("pet_status");
+  } catch (e) {
+    petAlive = null;
+  }
+  renderPetStatus();
+}
+
+function petMetricInputs() {
+  return Array.from(petMetricBox.querySelectorAll('input[type="checkbox"]'));
+}
+
+/** 配置 → 控件（包括后端清洗后的回显） */
+function paintPetCfg() {
+  petSwitch.checked = !!petCfg.enabled;
+  petMetricInputs().forEach((input) => {
+    input.checked = (petCfg.metrics || []).includes(input.value);
+    const chip = input.closest(".chip");
+    if (chip) chip.classList.toggle("is-on", input.checked);
+  });
+  const pct = Math.round((petCfg.opacity ?? 1) * 100);
+  petOpacity.value = String(pct);
+  petOpacityOut.textContent = `${pct}%`;
+  setText("pet-tag", petCfg.enabled ? "已开启" : "已关闭");
+  renderPetStatus();
+}
+
+/** 控件 → 配置 */
+function readPetForm() {
+  return {
+    enabled: petSwitch.checked,
+    metrics: petMetricInputs()
+      .filter((i) => i.checked)
+      .map((i) => i.value),
+    opacity: Number(petOpacity.value) / 100,
+  };
+}
+
+async function pushPetCfg(cfg) {
+  try {
+    petCfg = await invoke("set_pet_config", { config: cfg });
+  } catch (e) {
+    console.error("保存桌面宠物配置失败:", e);
+    return;
+  }
+  try {
+    localStorage.setItem(PET_KEY, JSON.stringify(petCfg));
+  } catch (e) {
+    /* 隐私模式等场景不可写：本次运行内仍生效，下次启动回落到后端 pet.json */
+  }
+  paintPetCfg();
+}
+
+async function initPetSettings() {
+  let stored = null;
+  try {
+    stored = JSON.parse(localStorage.getItem(PET_KEY) || "null");
+  } catch (e) {
+    stored = null;
+  }
+  if (stored && Array.isArray(stored.metrics)) {
+    // 本地缓存优先（用户上次的选择），顺带把窗口恢复出来
+    await pushPetCfg(stored);
+  } else {
+    try {
+      petCfg = await invoke("get_pet_config");
+    } catch (e) {
+      console.error("读取桌面宠物配置失败:", e);
+      petCfg = { ...PET_FALLBACK };
+    }
+  }
+  paintPetCfg();
+}
+
+petSwitch.addEventListener("change", () => pushPetCfg(readPetForm()));
+
+petMetricInputs().forEach((input) => {
+  input.addEventListener("change", () => pushPetCfg(readPetForm()));
+});
+
+// 拖动时只更新数字，松手才提交（避免滑杆每动一格就打一次后端）
+petOpacity.addEventListener("input", () => {
+  petOpacityOut.textContent = `${petOpacity.value}%`;
+});
+petOpacity.addEventListener("change", () => pushPetCfg(readPetForm()));
+
 /* ---------------- 页面切换：监控 / 设置 ---------------- */
 
 const viewMonitor = document.getElementById("view-monitor");
@@ -731,8 +872,11 @@ function switchView(name) {
   viewMonitor.classList.toggle("hidden", toSettings);
   viewSettings.classList.toggle("hidden", !toSettings);
   navButtons.forEach((b) => b.classList.toggle("active", b.dataset.view === name));
-  // 进入设置页时立刻补一次采集通道状态（不必等下一拍）
-  if (toSettings) renderAdvanced();
+  // 进入设置页时立刻补一次采集通道 / 宠物窗口状态（不必等下一拍）
+  if (toSettings) {
+    renderAdvanced();
+    refreshPetStatus();
+  }
   // 提示条只在监控页出现，切页后立即同步
   renderPawnioTip();
   try {
@@ -785,4 +929,5 @@ onTipClick("tip-unmute", () => {
 /* 启动：设置异步加载，同时先渲染首屏再开启轮询
  * （不用 top-level await，保持构建目标兼容） */
 initSettings();
+initPetSettings();
 tick().then(schedule);
