@@ -9,42 +9,14 @@
     桌面宠物窗口：置顶、无边框、透明、不进任务栏。
     整只宠物任何位置都能拖——body、.pet、.pet-stage、.pet-panel 全部打 deep，
     让 Tauri drag.js 沿事件路径向上识别时**总能**找到 deep 拖动区，
-    避免「target 是 SVG path/shadow 时找不到 deep 父级」的问题。
-    dblclick 监听不放 Tauri，由 JS 自己合成（mouseup 时按时间+距离窗判断双击），
-    这样不依赖 Tauri 在 mousedown 上 stopImmediatePropagation 的副作用。
+    避免「target 是贴图的透明区域时找不到 deep 父级」的问题。
+    形象是 6 档 × 4 帧的贴图（src/assets/pet/，见 tools/make_pet_frames.py），
+    由 src/pet.js 按 CPU 温度整段切换、档位内循环播放。
   -->
   <body data-tauri-drag-region="deep">
     <div class="pet" id="pet" data-tauri-drag-region="deep">
       <div class="pet-stage" data-tauri-drag-region="deep">
-        <svg class="pet-svg" viewBox="0 0 120 108" aria-hidden="true">
-          <ellipse class="p-shadow" cx="60" cy="100" rx="30" ry="4.5" />
-          <g class="p-body-group">
-            <!-- 耳朵 -->
-            <path class="p-ear" d="M31 38 L33 13 L53 31 Z" />
-            <path class="p-ear" d="M89 38 L87 13 L67 31 Z" />
-            <path class="p-ear-in" d="M34 33 L35.5 22 L45 30 Z" />
-            <path class="p-ear-in" d="M86 33 L84.5 22 L75 30 Z" />
-            <!-- 身体 -->
-            <ellipse class="p-body" cx="60" cy="62" rx="40" ry="37" />
-            <ellipse class="p-belly" cx="60" cy="82" rx="22" ry="12" />
-            <!-- 腮红 -->
-            <ellipse class="p-blush" cx="36" cy="70" rx="6.5" ry="3.8" />
-            <ellipse class="p-blush" cx="84" cy="70" rx="6.5" ry="3.8" />
-            <!-- 眼睛（整组一起眨） -->
-            <g class="p-eyes">
-              <ellipse class="p-eye" cx="47" cy="55" rx="6.4" ry="7.8" />
-              <ellipse class="p-eye" cx="73" cy="55" rx="6.4" ry="7.8" />
-              <circle class="p-glint" cx="49.3" cy="51.6" r="2.2" />
-              <circle class="p-glint" cx="75.3" cy="51.6" r="2.2" />
-            </g>
-            <!-- 嘴 -->
-            <path class="p-mouth" d="M55 67 Q60 72 65 67" />
-          </g>
-          <!-- 太热时才冒出来的汗滴 -->
-          <g class="p-sweat">
-            <path class="p-drop" d="M97 30 C101 37 103 41 103 44 A6.4 6.4 0 0 1 90.2 44 C90.2 41 92 37 97 30 Z" />
-          </g>
-        </svg>
+        <img class="pet-img" id="pet-img" alt="" draggable="false" data-tauri-drag-region="deep" />
       </div>
 
       <div class="pet-panel" data-tauri-drag-region="deep">

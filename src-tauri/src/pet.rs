@@ -25,8 +25,12 @@ pub const WINDOW_LABEL: &str = "pet";
 const FILE_NAME: &str = "pet.json";
 
 /// 窗口尺寸：按 3 行指标 + 一只宠物的高度设计；行数变少时内容垂直居中，留白而不是改窗口大小
+///
+/// 高度跟着贴图走：形象是 15:16 的逐帧贴图（`src/assets/pet/`），118px 宽 → 约 125px 高，
+/// 比原来的内联 SVG（118x106）高约 19px，所以窗口高度从 202 提到 224。
+/// **换贴图比例时这里要跟着改**，否则底部指标条会被裁掉。
 const WIN_W: f64 = 190.0;
-const WIN_H: f64 = 202.0;
+const WIN_H: f64 = 224.0;
 
 /// 可选指标，取值与前端 `index.html` 里 checkbox 的 value 一致
 pub const METRIC_KEYS: [&str; 3] = ["cpu", "mem", "gpu"];

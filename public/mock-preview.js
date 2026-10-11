@@ -15,9 +15,11 @@
   const fanOn = params.get("fan") === "on";
   // `?mock=1&lenovo=1` 用来预览「联想机型、风扇待启用」的提示与「启用」按钮
   const lenovo = params.get("lenovo") === "1";
-  // 桌面宠物：`?mock=1&hot=1` 预览过热态（冒汗 + 红色）；`?mock=1&nogpu=1` 预览读不到 GPU 占用
+  // 桌面宠物：`?mock=1&hot=1` 预览过热态（红色档）；`?mock=1&nogpu=1` 预览读不到 GPU 占用；
+  // `?mock=1&temp=74` 固定温度，用来逐档核对形象（档位：38/50/63/74/84/94）
   const hot = params.get("hot") === "1";
   const noGpu = params.get("nogpu") === "1";
+  const fixedTemp = params.has("temp") ? Number(params.get("temp")) : null;
 
   let tick = 0;
   const jitter = (base, amp) => Math.max(0, base + (Math.random() - 0.5) * amp);
@@ -282,7 +284,13 @@
           return Promise.resolve(petConfig);
         }
         case "get_pet_metrics": {
-          const temp = pawnioMissing ? null : hot ? jitter(93, 3) : jitter(58, 26);
+          const temp = pawnioMissing
+            ? null
+            : fixedTemp != null
+              ? fixedTemp
+              : hot
+                ? jitter(93, 3)
+                : jitter(58, 26);
           return Promise.resolve({
             cpuPct: jitter(28, 30),
             memPct: jitter(62, 8),

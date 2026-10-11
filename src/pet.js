@@ -5,15 +5,17 @@
  *   - `get_pet_config`  显示哪些指标、整体不透明度
  *   - `get_pet_metrics` CPU / 内存 / GPU 占用 + CPU 温度（只有这几个数，不做整份快照搬运）
  *
- * 身体颜色由 CPU 温度驱动；温度读不到时（多数机器需要装 PawnIO 驱动才有）退回按 CPU 占用着色，
- * 并在悬浮提示里说明，避免出现「颜色变了但不知道为什么」。
+ * 形象是 `src/assets/pet/` 下预处理好的一套逐帧贴图（`tools/make_pet_frames.py` 生成）：
+ * **6 个温度档 × 每个档位 4 帧**。档位由 CPU 温度决定（读不到温度时退回 CPU 占用），
+ * 档位内 4 帧循环播放；**跨档位时整段换成新档位的 4 帧序列**（从第 0 帧重新起播）。
+ * 色标 `SCALE` 与设置页的色带、以及后端 `colorSource` 的取舍保持一致。
  */
 import { invoke } from "@tauri-apps/api/core";
 import "./pet.css";
 
-/* ---------------- 温度 → 颜色 ---------------- */
+/* ---------------- 温度 → 形象 ---------------- */
 
-// 色标：温度越高越偏红。改动这里即可调整配色，两端之外的温度取端点色。
+// 色标：温度越高越偏红。与设置页色带同源，同时用来给宠物加一圈同色投影。
 const SCALE = [
   { v: 38, c: "#3b9dff" }, // 凉爽
   { v: 50, c: "#22d3a5" }, // 舒适
@@ -23,8 +25,46 @@ const SCALE = [
   { v: 94, c: "#ff5f6d" }, // 过热
 ];
 
-// 超过这个温度开始冒汗、呼吸加快
-const HOT_AT = 80;
+// 形象档位（= 贴图文件名里的数字），与 SCALE 的刻度一一对应
+const TIERS = SCALE.map((s) => s.v);
+
+// 达到这个档位就算「过热」：脚下的温度文字变橙、动画节奏加快
+const HOT_TIER = 84;
+
+// 每帧停留时长；过热时加快，视觉上更「喘」
+const FRAME_MS = 130;
+const FRAME_MS_HOT = 95;
+
+// 逐帧贴图：`t<档位>_<帧号>.webp`，构建期由 vite 收集成 URL 表
+const FRAME_MODULES = import.meta.glob("./assets/pet/t*_*.webp", {
+  eager: true,
+  query: "?url",
+  import: "default",
+});
+
+/** 档位 → 按帧号排好序的 URL 数组 */
+const TIER_FRAMES = new Map();
+for (const [path, url] of Object.entries(FRAME_MODULES)) {
+  const m = /t(\d+)_(\d+)\.webp$/.exec(path);
+  if (!m) continue;
+  const tier = Number(m[1]);
+  const frame = Number(m[2]);
+  if (!TIER_FRAMES.has(tier)) TIER_FRAMES.set(tier, []);
+  TIER_FRAMES.get(tier)[frame] = url;
+}
+// 只保留确实有图的档位，避免某档缺图时切过去是空白
+for (const [tier, list] of [...TIER_FRAMES]) {
+  const frames = list.filter(Boolean);
+  if (frames.length) TIER_FRAMES.set(tier, frames);
+  else TIER_FRAMES.delete(tier);
+}
+// 贴图一张都没收到时，窗口会表现为「纯透明 = 什么都没有」。这种失败没有任何 UI 反馈，
+// 所以至少要在控制台留一句（排查时配合 WINMON_PET_TRACE 用）
+if (!TIER_FRAMES.size) {
+  console.error(
+    "宠物贴图为空：src/assets/pet/ 下应有 t<档位>_<帧>.webp。先跑 python tools/make_pet_frames.py 生成。",
+  );
+}
 
 const METRIC_DEFS = {
   cpu: { label: "CPU", color: "#4f8cff", pick: (m) => m.cpuPct },
@@ -51,14 +91,7 @@ function rgbToHex([r, g, b]) {
   return `#${c(r)}${c(g)}${c(b)}`;
 }
 
-/** amount > 0 往白色混（提亮），< 0 往黑色混（压暗） */
-function shade(hex, amount) {
-  const rgb = hexToRgb(hex);
-  const target = amount > 0 ? 255 : 0;
-  const t = Math.abs(amount);
-  return rgbToHex(rgb.map((v) => v + (target - v) * t));
-}
-
+/** 同色半透明（给投影用） */
 function rgba(hex, alpha) {
   const [r, g, b] = hexToRgb(hex);
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
@@ -75,17 +108,26 @@ function colorAt(value) {
     const b = SCALE[i + 1];
     if (v <= b.v) {
       const t = (v - a.v) / (b.v - a.v);
-      return rgbToHex(
-        hexToRgb(a.c).map((c, k) => c + (hexToRgb(b.c)[k] - c) * t),
-      );
+      return rgbToHex(hexToRgb(a.c).map((c, k) => c + (hexToRgb(b.c)[k] - c) * t));
     }
   }
   return last.c;
 }
 
+/** 数值 → 戏偶档位：取最接近的刻度（越界时落在两端档位） */
+function tierAt(value) {
+  const v = Number.isFinite(value) ? value : TIERS[0];
+  let best = TIERS[0];
+  for (const t of TIERS) {
+    if (Math.abs(t - v) < Math.abs(best - v)) best = t;
+  }
+  return best;
+}
+
 /* ---------------- DOM ---------------- */
 
 const root = document.getElementById("pet");
+const img = document.getElementById("pet-img");
 const rowsBox = document.getElementById("pet-rows");
 const foot = document.getElementById("pet-foot");
 
@@ -119,21 +161,69 @@ function buildRows(metrics) {
   }
 }
 
+/** 当前档位的颜色写进 CSS 变量：`--pet` 记录当前档位色，`--pet-glow` 给贴图加同色投影 */
 function applyColor(hex) {
   root.style.setProperty("--pet", hex);
-  root.style.setProperty("--pet-dark", shade(hex, -0.35));
-  root.style.setProperty("--pet-soft", shade(hex, 0.55));
   root.style.setProperty("--pet-glow", rgba(hex, 0.45));
 }
 
+/* ---------------- 逐帧播放 ---------------- */
+
+// 当前档位与已播到第几帧。跨档位时重置为第 0 帧并立刻换图。
+let curTier = null;
+let curFrame = 0;
+let hot = false;
+
+function paintFrame() {
+  const list = TIER_FRAMES.get(curTier);
+  if (!list || !list.length) return;
+  img.src = list[curFrame % list.length];
+}
+
+function setTier(tier) {
+  if (tier === curTier) return;
+  curTier = tier;
+  curFrame = 0;
+  paintFrame();
+}
+
+function stepFrame() {
+  const list = TIER_FRAMES.get(curTier);
+  if (!list || !list.length) return;
+  curFrame = (curFrame + 1) % list.length;
+  paintFrame();
+}
+
+// 帧循环独立于读数节拍：读数每秒一次，动画不能跟着卡成 1fps。
+// 间隔按档位在定时器里取，避免跨档位时重建定时器。
+(function loop() {
+  stepFrame();
+  setTimeout(loop, hot ? FRAME_MS_HOT : FRAME_MS);
+})();
+
+// 首帧之前先把 24 张贴图全部预解码，避免切档位那一下闪白
+if (img) {
+  for (const list of TIER_FRAMES.values()) {
+    for (const url of list) {
+      const pre = new Image();
+      pre.src = url;
+    }
+  }
+  // 贴图就绪前先摆一张最冷档，避免窗口刚出来是空白
+  setTier(TIERS[0]);
+}
+
 function render(m, cfg) {
-  // 温度是首选着色依据；读不到就退回 CPU 占用（后端已把取舍写进 colorSource）
+  // 温度是首选依据；读不到就退回 CPU 占用（后端已把取舍写进 colorSource）
   const temp = m && Number.isFinite(m.cpuTempC) ? m.cpuTempC : null;
   const byTemp = temp != null;
   const heat = byTemp ? temp : m ? Number(m.cpuPct) || 0 : 0;
 
   applyColor(colorAt(heat));
-  root.classList.toggle("is-hot", heat >= HOT_AT);
+  const tier = tierAt(heat);
+  hot = tier >= HOT_TIER;
+  root.classList.toggle("is-hot", hot);
+  if (m) setTier(tier);
 
   for (const [key, cell] of rowCache) {
     const def = METRIC_DEFS[key];
@@ -146,10 +236,10 @@ function render(m, cfg) {
 
   if (byTemp) {
     foot.textContent = `温度 ${temp.toFixed(0)}°C`;
-    root.title = `CPU 温度 ${temp.toFixed(0)}°C · 身体颜色随温度变化，双击打开主窗口`;
+    root.title = `CPU 温度 ${temp.toFixed(0)}°C · 形象随温度变化，双击打开主窗口`;
   } else {
-    foot.textContent = "温度 -- · 按占用着色";
-    root.title = `CPU 温度不可用，身体颜色暂按 CPU 占用着色 · 双击打开主窗口`;
+    foot.textContent = "温度 -- · 按占用切换形象";
+    root.title = `CPU 温度不可用，形象暂按 CPU 占用切换 · 双击打开主窗口`;
   }
 
   if (cfg) root.style.setProperty("--pet-opacity", String(cfg.opacity ?? 1));
@@ -205,9 +295,7 @@ document.addEventListener(
     if (e.button !== 0 || e.detail !== 2) return;
     e.stopImmediatePropagation(); // 别让 Tauri 用这次双击去 toggle maximize
     e.preventDefault();
-    invoke("show_main_window").catch((err) =>
-      console.error("打开主窗口失败：", err),
-    );
+    invoke("show_main_window").catch((err) => console.error("打开主窗口失败：", err));
   },
   { capture: true },
 );
