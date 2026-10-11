@@ -1,0 +1,251 @@
+/*
+ * 桌面宠物窗口样式。
+ *
+ * 窗口本身由后端建：置顶 / 无边框 / 透明 / 不进任务栏，所以这里全程不要给 body 上底色，
+ * 否则桌面宠物会变成一块矩形色板。
+ *
+ * 颜色全部走 CSS 变量，由 pet.js 按 CPU 温度写入：
+ *   --pet 主色、--pet-dark 耳朵与描边、--pet-soft 肚皮、--pet-glow 投影、--pet-opacity 整体不透明度
+ */
+
+:root {
+  --pet: #22d3a5;
+  --pet-dark: #17876a;
+  --pet-soft: #a8f0dc;
+  --pet-glow: rgba(34, 211, 165, 0.45);
+  --pet-opacity: 1;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+  /* 宠物窗口里没有可选内容，避免拖动时选中文字 */
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+}
+
+body {
+  font-family: "Segoe UI", "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
+}
+
+.pet {
+  height: 100%;
+  box-sizing: border-box;
+  padding: 4px 6px 6px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  opacity: var(--pet-opacity);
+  transition: opacity 0.2s ease;
+  /* 根容器纯透明——不再要那张玻璃卡。整只宠物只是内容本身的剪影，
+   * 桌面背景透过来，看起来像贴在桌面上。 */
+  background: transparent;
+}
+
+/* ---------------- 宠物本体 ---------------- */
+
+.pet-stage {
+  width: 118px;
+  flex: 0 0 auto;
+}
+
+.pet-svg {
+  width: 100%;
+  display: block;
+  overflow: visible;
+  filter: drop-shadow(0 6px 12px var(--pet-glow));
+}
+
+.p-shadow {
+  fill: rgba(0, 0, 0, 0.28);
+}
+
+.p-body-group {
+  transform-origin: 60px 100px;
+  animation: breathe 3.4s ease-in-out infinite;
+}
+
+.p-body {
+  fill: var(--pet);
+  stroke: var(--pet-dark);
+  stroke-width: 1.5;
+}
+
+.p-ear {
+  fill: var(--pet);
+  stroke: var(--pet-dark);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+}
+
+.p-ear-in {
+  fill: var(--pet-dark);
+  opacity: 0.55;
+}
+
+.p-belly {
+  fill: var(--pet-soft);
+  opacity: 0.75;
+}
+
+.p-blush {
+  fill: #ff7b93;
+  opacity: 0.5;
+}
+
+.p-eyes {
+  transform-origin: 60px 55px;
+  animation: blink 5.6s infinite;
+}
+
+.p-eye {
+  fill: #131a2c;
+}
+
+.p-glint {
+  fill: #ffffff;
+  opacity: 0.9;
+}
+
+.p-mouth {
+  fill: none;
+  stroke: #131a2c;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+}
+
+/* 汗滴：默认透明，.is-hot 时才出现 */
+.p-sweat {
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.p-drop {
+  fill: #7fd7ff;
+  stroke: #3b9dff;
+  stroke-width: 1.2;
+}
+
+.pet.is-hot .p-sweat {
+  opacity: 1;
+  animation: sweat 1.6s ease-in-out infinite;
+}
+
+/* 热的时候呼吸变快，视觉上更「喘」 */
+.pet.is-hot .p-body-group {
+  animation-duration: 1.5s;
+}
+
+@keyframes breathe {
+  0%,
+  100% {
+    transform: scale(1, 1);
+  }
+  50% {
+    transform: scale(1.03, 0.975);
+  }
+}
+
+@keyframes blink {
+  0%,
+  92%,
+  100% {
+    transform: scaleY(1);
+  }
+  95% {
+    transform: scaleY(0.08);
+  }
+}
+
+@keyframes sweat {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(4px);
+  }
+}
+
+/* ---------------- 指标面板 ---------------- */
+
+.pet-panel {
+  flex: 0 0 auto;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 8px 5px;
+  border-radius: 10px;
+  /* 仅指标面板局部卡片背景——让数字可读，宠物本体保持透明 */
+  background: rgba(11, 16, 28, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.pet-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pet-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  line-height: 14px;
+  color: #e8eefb;
+}
+
+.pet-row.is-missing {
+  opacity: 0.45;
+}
+
+.pet-row--empty {
+  justify-content: center;
+  color: #93a1bb;
+}
+
+.pet-k {
+  flex: 0 0 28px;
+  color: #93a1bb;
+}
+
+.pet-bar {
+  flex: 1 1 auto;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+}
+
+.pet-bar > i {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: 999px;
+  transition: width 0.35s ease;
+}
+
+.pet-v {
+  flex: 0 0 30px;
+  text-align: right;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.pet-foot {
+  margin-top: 5px;
+  font-size: 10px;
+  color: #93a1bb;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.pet.is-hot .pet-foot {
+  color: #ff9f43;
+}
