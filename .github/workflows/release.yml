@@ -53,8 +53,9 @@ jobs:
             Write-Error "tag (v$tag) 与 tauri.conf.json 的 version ($conf) 不一致，请先同步版本号再打标签"
           }
 
-      # 出正式包之前再跑一遍单测，防止带着回归打版
+      # 出正式包之前再跑一遍单测，防止带着回归打版（Cargo.toml 在 src-tauri/ 下）
       - name: 发布前 Rust 单测
+        working-directory: src-tauri
         run: cargo test -p pulse-deck
 
       # tauri-action 会执行 tauri build（含 beforeBuildCommand），出 NSIS 安装包

@@ -42,8 +42,10 @@ jobs:
       - name: 安装前端依赖
         run: npm install
 
+      # Cargo.toml 在 src-tauri/ 下，仓库根没有 workspace 清单
       # diag/smoke 用例在无硬件环境按设计降级（缺 NVIDIA/电池/联想风扇时只打印不断言）
       - name: Rust 单测
+        working-directory: src-tauri
         run: cargo test -p pulse-deck
 
       - name: 构建校验（tauri build --no-bundle）
