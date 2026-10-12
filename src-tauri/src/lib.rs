@@ -7,6 +7,7 @@ use std::time::Duration;
 
 mod battery;
 mod fan;
+mod fan_pref;
 mod gpu;
 mod model;
 mod msr_bridge;
@@ -35,6 +36,9 @@ pub struct AppState {
     bridge_prompted: Arc<AtomicBool>,
     /// 桌面宠物的配置（窗口是否存在的依据，落盘在 pet.json）
     pet: pet::PetStore,
+    /// 风扇的用户手动指定（落盘在 fan.json）。**必须与采样线程共用同一份**，
+    /// 否则设置页改了而采样读的是启动时那份。
+    fan_pref: fan_pref::FanPrefStore,
 }
 
 #[tauri::command]
@@ -82,8 +86,22 @@ fn get_pet_config(state: State<'_, AppState>) -> pet::PetConfig {
 ///
 /// 返回清洗后的配置——非法指标会被剔除、至少保留一项、透明度夹到 0.3~1.0，
 /// 前端直接用返回值回显，避免界面与真实状态不一致。
+///
+/// ⚠⚠ **`async` 是硬性要求，不要改回同步命令**（2026-10-12 修的「启用宠物后整个进程
+/// 卡死、退出都关不掉，只能任务管理器杀」就是它引起的）。
+///
+/// 同步命令跑在**主线程的 WebView2 IPC 回调里**，而 `WebviewWindowBuilder::build()`
+/// 在 Windows 上会在这个上下文里**死锁**（官方 "Known issues" 明文写着）：它内联执行
+/// `CreateCoreWebView2Controller`，wry 用 `wait_with_pump()` 起一个嵌套 `GetMessage`
+/// 循环等 COM 完成回调，可线程正卡在 WebView2 的 `WebMessageReceived` 回调里，
+/// 完成回调永远投递不进来。结果就是主线程永久阻塞：界面冻结、托盘「退出」也没人处理，
+/// 只能任务管理器杀进程。
+///
+/// 改成 async 后命令跑在 tokio 线程上，`build()` 只把创建请求 post 给事件循环，
+/// 由主线程在正常的消息循环上下文里建窗口；`create_window` 内部仍然会阻塞等待结果，
+/// 所以失败照样能返回给前端。回归测试见 `pet::tests::set_pet_config_is_async_command`。
 #[tauri::command]
-fn set_pet_config(
+async fn set_pet_config(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     config: pet::PetConfig,
@@ -181,7 +199,7 @@ fn pawnio_status(app: tauri::AppHandle) -> serde_json::Value {
 /// * `elevatedActive`：提权桥接是否正在提供新鲜读数（说明用户已授权且正常工作）；
 /// * `missing`：还差什么（`pawnio` = 没装驱动；`lenovoFan` = 联想通道未启用）。
 #[tauri::command]
-fn hardware_status(app: tauri::AppHandle) -> serde_json::Value {
+fn hardware_status(app: tauri::AppHandle, state: State<'_, AppState>) -> serde_json::Value {
     let probe = pawnio_setup::probe();
     let installer_ready = app
         .path()
@@ -203,7 +221,29 @@ fn hardware_status(app: tauri::AppHandle) -> serde_json::Value {
         "lenovoFanReady": fan_ready,
         // 需要用户点「启用」的场景：联想机型但还没拿到风扇
         "needsEnable": wmi::is_lenovo() && !fan_ready,
+        // 设置页「CPU 风扇」下拉的备选项：当前能读到的风扇（号 + 转速）
+        "lenovoFans": fresh
+            .as_ref()
+            .and_then(|st| st.lenovo_fans.clone())
+            .unwrap_or_default(),
+        // 当前生效的选择（null = 自动）
+        "cpuFanId": state.fan_pref.get().cpu_fan_id,
     })
+}
+
+/// 读取风扇偏好（设置页「CPU 风扇」下拉的当前值）
+#[tauri::command]
+fn get_fan_pref(state: State<'_, AppState>) -> fan_pref::FanPref {
+    state.fan_pref.get()
+}
+
+/// 保存风扇偏好，返回清洗后的配置（前端回显以这份为准）。
+///
+/// 采样线程与这里共用同一个 `FanPrefStore`，所以改完**下一拍**就生效，
+/// 不需要重启应用或重建桥接。
+#[tauri::command]
+fn set_fan_pref(state: State<'_, AppState>, pref: fan_pref::FanPref) -> fan_pref::FanPref {
+    state.fan_pref.set(pref)
 }
 
 /// 用户点击「安装 PawnIO」。
@@ -436,6 +476,11 @@ pub fn run() {
     // 防止启动过程中反复弹 UAC。
     let bridge_prompted = Arc::new(AtomicBool::new(false));
 
+    // 风扇偏好只加载一次，同时交给采样线程与设置页——两边必须是同一个句柄，
+    // 否则「改了 CPU 风扇号」只在设置页生效、读数纹丝不动。
+    let fan_pref = fan_pref::FanPrefStore::load();
+    sampler.set_fan_pref(fan_pref.clone());
+
     tauri::Builder::default()
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
@@ -448,6 +493,7 @@ pub fn run() {
             close_to_tray,
             bridge_prompted: bridge_prompted.clone(),
             pet,
+            fan_pref,
         })
         .invoke_handler(tauri::generate_handler![
             get_snapshot,
@@ -459,6 +505,8 @@ pub fn run() {
             set_autostart,
             pawnio_status,
             hardware_status,
+            get_fan_pref,
+            set_fan_pref,
             install_pawnio,
             enable_elevated,
             get_pet_config,
@@ -472,6 +520,11 @@ pub fn run() {
             let setup_prompted = bridge_prompted.clone();
             move |app| {
                 build_tray(app.handle())?;
+
+                // 先把主窗口的 WebView2 环境缓存下来：宠物窗口必须复用它，
+                // 而 `with_webview` 只在主线程同步有效——这里（setup）正好是主线程。
+                // 放在建宠物窗口**之前**：之后建窗口的动作都在非主线程上，现取是取不到的。
+                pet::capture_main_environment(app.handle());
 
                 // 恢复桌面宠物窗口（配置里 enabled=true 时才建）。
                 // setup() 里直接建即可——曾怀疑「事件循环未就绪导致渲染冻结」，

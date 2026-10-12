@@ -5,9 +5,9 @@
  *   - `get_pet_config`  显示哪些指标、整体不透明度
  *   - `get_pet_metrics` CPU / 内存 / GPU 占用 + CPU 温度（只有这几个数，不做整份快照搬运）
  *
- * 形象是 `src/assets/pet/` 下预处理好的一套逐帧贴图（`tools/make_pet_frames.py` 生成）：
- * **6 个温度档 × 每个档位 4 帧**。档位由 CPU 温度决定（读不到温度时退回 CPU 占用），
- * 档位内 4 帧循环播放；**跨档位时整段换成新档位的 4 帧序列**（从第 0 帧重新起播）。
+ * 形象是 `src/assets/pet/` 下预处理好的一套逐帧贴图（`tools/copy_pet_frames.py` 生成）：
+ * **6 个温度档 × 每个档位 8 帧**。档位由 CPU 温度决定（读不到温度时退回 CPU 占用），
+ * 档位内 8 帧循环播放；**跨档位时整段换成新档位的 8 帧序列**（从第 0 帧重新起播）。
  * 色标 `SCALE` 与设置页的色带、以及后端 `colorSource` 的取舍保持一致。
  */
 import { invoke } from "@tauri-apps/api/core";
@@ -31,12 +31,15 @@ const TIERS = SCALE.map((s) => s.v);
 // 达到这个档位就算「过热」：脚下的温度文字变橙、动画节奏加快
 const HOT_TIER = 84;
 
-// 每帧停留时长；过热时加快，视觉上更「喘」
-const FRAME_MS = 130;
-const FRAME_MS_HOT = 95;
+// 每帧停留时长；过热时加快（视觉上更「喘」），但绝不能快到看不清动作。
+// 之前 130/95ms 显得太碎（≈7.7/10.5fps），调慢到 260/200ms 后整段动画能
+// 完整播完 8 帧（约 2.1s / 1.6s）、各档姿态差异也能看清。
+const FRAME_MS = 260;
+const FRAME_MS_HOT = 200;
 
-// 逐帧贴图：`t<档位>_<帧号>.webp`，构建期由 vite 收集成 URL 表
-const FRAME_MODULES = import.meta.glob("./assets/pet/t*_*.webp", {
+// 逐帧贴图：`t<档位>_<帧号>.png`，构建期由 vite 收集成 URL 表
+// 之前出 WebP 会出现色偏（alpha 边缘和 RGB 错位），改为 PNG 走 RGBA 通道
+const FRAME_MODULES = import.meta.glob("./assets/pet/t*_*.png", {
   eager: true,
   query: "?url",
   import: "default",
@@ -45,7 +48,7 @@ const FRAME_MODULES = import.meta.glob("./assets/pet/t*_*.webp", {
 /** 档位 → 按帧号排好序的 URL 数组 */
 const TIER_FRAMES = new Map();
 for (const [path, url] of Object.entries(FRAME_MODULES)) {
-  const m = /t(\d+)_(\d+)\.webp$/.exec(path);
+  const m = /t(\d+)_(\d+)\.png$/.exec(path);
   if (!m) continue;
   const tier = Number(m[1]);
   const frame = Number(m[2]);
@@ -62,7 +65,7 @@ for (const [tier, list] of [...TIER_FRAMES]) {
 // 所以至少要在控制台留一句（排查时配合 WINMON_PET_TRACE 用）
 if (!TIER_FRAMES.size) {
   console.error(
-    "宠物贴图为空：src/assets/pet/ 下应有 t<档位>_<帧>.webp。先跑 python tools/make_pet_frames.py 生成。",
+    "宠物贴图为空：src/assets/pet/ 下应有 t<档位>_<帧>.png。先跑 python tools/copy_pet_frames.py 生成。",
   );
 }
 
@@ -201,7 +204,7 @@ function stepFrame() {
   setTimeout(loop, hot ? FRAME_MS_HOT : FRAME_MS);
 })();
 
-// 首帧之前先把 24 张贴图全部预解码，避免切档位那一下闪白
+// 首帧之前先把 48 张贴图全部预解码，避免切档位那一下闪白
 if (img) {
   for (const list of TIER_FRAMES.values()) {
     for (const url of list) {

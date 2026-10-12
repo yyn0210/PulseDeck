@@ -421,6 +421,18 @@
               以下是各采集通道的当前状态，随采样自动刷新。
             </p>
             <div class="adv-status" id="adv-status"></div>
+            <!-- CPU 风扇号：默认按厂商的 FanID 约定自动判断，对不上时让用户手动纠正 -->
+            <div class="setting-rows hidden" id="fan-cpu-row">
+              <label class="setting-row">
+                <span class="setting-text">
+                  <b>CPU 风扇</b>
+                  <small>默认按厂商编号自动判断；显示的转速对不上时，手动指定一个风扇号</small>
+                </span>
+                <select id="fan-cpu-select" title="CPU 风扇">
+                  <option value="">自动</option>
+                </select>
+              </label>
+            </div>
             <p class="hint hidden" id="thermal-hint"></p>
             <p class="tip-muted-note hidden" id="tip-muted-note">
               已永久关闭主页面上的 PawnIO 安装提醒。

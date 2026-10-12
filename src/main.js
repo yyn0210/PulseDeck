@@ -294,6 +294,8 @@ let pawnio = null;
 let pawnioBusy = false;
 /* 高级采集通道状态（联想风扇 / PawnIO），由 hardware_status 返回 */
 let hwStatus = null;
+/* 风扇号偏好：厂商的 FanID 约定（0 = CPU）在个别机型上对不上时，让用户手动纠正 */
+let fanPref = null;
 
 async function refreshPawnioStatus() {
   try {
@@ -310,6 +312,43 @@ async function refreshHardwareStatus() {
   } catch (e) {
     hwStatus = null;
   }
+  try {
+    fanPref = await invoke("get_fan_pref");
+  } catch (e) {
+    fanPref = null;
+  }
+}
+
+/** 设置页「CPU 风扇」下拉：备选项是 hardware_status 报上来的真实风扇列表。
+ * 只有厂商通道（当前是联想）才有可辨识的风扇号，其它机型整行隐藏。 */
+function renderFanCpuSelect() {
+  const row = document.getElementById("fan-cpu-row");
+  const sel = document.getElementById("fan-cpu-select");
+  if (!row || !sel) return;
+
+  const fans = (hwStatus && hwStatus.lenovoFans) || [];
+  row.classList.toggle("hidden", !(hwStatus && hwStatus.isLenovo) || fans.length === 0);
+  if (fans.length === 0) return;
+
+  const current = fanPref ? fanPref.cpuFanId : null;
+  const known = fans.some((f) => f.fanId === current);
+  // 手动指定的号当前没读到（风扇列表变了 / 桥接没起来）时也要留着这个选项，
+  // 否则下拉会静默跳回「自动」，用户以为设置丢了
+  const extra = current != null && !known ? [{ fanId: current, rpm: null }] : [];
+
+  sel.innerHTML = [`<option value="">自动</option>`]
+    .concat(
+      fans
+        .concat(extra)
+        .map(
+          (f) =>
+            `<option value="${f.fanId}">风扇 ${f.fanId}${
+              f.rpm == null ? " · 未检测到" : ` · ${Math.round(f.rpm)} RPM`
+            }</option>`,
+        ),
+    )
+    .join("");
+  sel.value = current == null ? "" : String(current);
 }
 
 /** 设置页「高级采集」区块：把各采集通道的当前状态摆出来（只读，操作按钮在下方 hint 里）。
@@ -359,6 +398,24 @@ function renderAdvanced() {
   // 「永久关闭」了主页面提醒时，在这里给一条改回来的入口，避免变成单向门
   const mutedNote = document.getElementById("tip-muted-note");
   if (mutedNote) mutedNote.classList.toggle("hidden", !tipMutedForever);
+
+  renderFanCpuSelect();
+}
+
+/* 改「CPU 风扇」下拉：后端与采样线程共用同一份配置，下一拍读数就换过来 */
+const fanCpuSelect = document.getElementById("fan-cpu-select");
+if (fanCpuSelect) {
+  fanCpuSelect.addEventListener("change", async () => {
+    const raw = fanCpuSelect.value;
+    const cpuFanId = raw === "" ? null : Number(raw);
+    try {
+      // 回显以后端返回值为准（越界的号会被清洗成「自动」）
+      fanPref = await invoke("set_fan_pref", { pref: { cpuFanId } });
+      renderFanCpuSelect();
+    } catch (e) {
+      console.error("保存 CPU 风扇设置失败:", e);
+    }
+  });
 }
 
 /* ---------------- 主页面顶部提示条 ---------------- */

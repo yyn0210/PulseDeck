@@ -10,7 +10,7 @@
     整只宠物任何位置都能拖——body、.pet、.pet-stage、.pet-panel 全部打 deep，
     让 Tauri drag.js 沿事件路径向上识别时**总能**找到 deep 拖动区，
     避免「target 是贴图的透明区域时找不到 deep 父级」的问题。
-    形象是 6 档 × 4 帧的贴图（src/assets/pet/，见 tools/make_pet_frames.py），
+    形象是 6 档 × 8 帧的贴图（src/assets/pet/，见 tools/copy_pet_frames.py），
     由 src/pet.js 按 CPU 温度整段切换、档位内循环播放。
   -->
   <body data-tauri-drag-region="deep">

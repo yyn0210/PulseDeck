@@ -36,6 +36,7 @@
 //! 联想通道的实现细节见 `wmi.rs` 的「厂商通道」一节，分析方法见
 //! `docs/LegionZone采集机制分析.md`。
 
+use crate::fan_pref::FanPrefStore;
 use crate::msr_bridge;
 use crate::wmi;
 
@@ -94,6 +95,8 @@ impl Vendor {
 /// （该值由 BIOS 固定），否则每拍都会触发一次 WMI 查询。
 pub struct VendorProbe {
     vendor: Vendor,
+    /// 用户手动指定的 CPU 风扇号（落盘在 `fan.json`，与设置页共用同一份句柄）
+    pref: FanPrefStore,
     /// 测试替身：`Some` 时跳过桥接文件、直接返回该读数。
     /// 生产路径恒为 `None`（只有测试构造器会设置它）。
     stub: Option<(Option<VendorFan>, Option<VendorFan>)>,
@@ -109,8 +112,17 @@ impl VendorProbe {
     pub fn new() -> Self {
         Self {
             vendor: Vendor::detect(),
+            pref: FanPrefStore::load(),
             stub: None,
         }
+    }
+
+    /// 换成外部传入的偏好句柄。
+    ///
+    /// 必须注入而不是各读各的：`fan.json` 若被两个实例分别加载，
+    /// 设置页改了配置而采样线程读的是启动时那份，改动就不会生效。
+    pub fn set_pref(&mut self, pref: FanPrefStore) {
+        self.pref = pref;
     }
 
     /// 识别到的厂商（供界面展示）
@@ -132,26 +144,100 @@ impl VendorProbe {
         // 桥接没在跑 / 读数过期（>8s）/ 本机没暴露该通道 → 一律 None，上层降级。
         // 不缓存上一次的读数：宁可在桥接停掉后如实回到 `--`，也不要留一个冻住不动的旧值。
         match msr_bridge::read_fresh_fans() {
-            Some(fans) => map_fans(&fans, wmi::lenovo_fan_max_speed()),
+            Some(fans) => map_fans(
+                &fans,
+                wmi::lenovo_fan_max_speed(),
+                self.pref.get().cpu_fan_id,
+            ),
             None => (None, None),
         }
     }
 }
 
+/// 联想的 FanID 约定（来自 `LENOVO_FAN_TABLE_DATA` 的 `Fan_Id`，本机实测 0/0/1）
+const CPU_FAN_ID: u8 = 0;
+const GPU_FAN_ID: u8 = 1;
+
+/// 拿不到曲线上限时的机械常识上限：民用风扇不可能转过 2 万 RPM
+const RPM_CEILING_FALLBACK: f32 = 20_000.0;
+/// 已知曲线上限时的容忍倍数（允许短时超速）
+const RPM_OVERDRIVE: f32 = 1.5;
+/// 固件常见的「未提供」哨兵：`u16` 全 1
+const RPM_SENTINEL: f32 = 65_535.0;
+
+/// 转速读数是否可信——剔除哨兵值与明显离谱的脏数据。
+///
+/// ⚠️ **故意不设下限门槛**：竞品（LiteMonitor）对主板 Super I/O 通道设了
+/// `> 200 RPM` 的底噪过滤，因为那条通道上**没接风扇的风扇头会返回垃圾值**。
+/// 我们这条是 BIOS 在 `LENOVO_FAN_TABLE_DATA` 里声明过的真实风扇，不存在那种
+/// 空接口噪声；而 `0 RPM` 是风扇真停转的合法状态，砍掉它等于把「停转」显示成
+/// 「读不到」。所以这里只防**明显不可信**的值，不防低转速。
+pub(crate) fn plausible(rpm: f32, max: Option<f32>) -> bool {
+    if !rpm.is_finite() || rpm < 0.0 {
+        return false;
+    }
+    if rpm >= RPM_SENTINEL {
+        return false;
+    }
+    let ceiling = match max {
+        Some(m) if m > 0.0 => m * RPM_OVERDRIVE,
+        _ => RPM_CEILING_FALLBACK,
+    };
+    rpm <= ceiling
+}
+
 /// 把桥接给出的 `(FanID, RPM)` 列表映射成 `(CPU, GPU)` 两个读数。
 ///
-/// 联想的 FanID 约定：**0 = CPU，1 = GPU**（来自 `LENOVO_FAN_TABLE_DATA` 的 `Fan_Id`
-/// 取值，本机实测为 0/0/1）。取不到 1 号时按「第一个非 0 号」兜底。
-fn map_fans(fans: &[msr_bridge::LenovoFan], max: Option<f32>) -> (Option<VendorFan>, Option<VendorFan>) {
-    let pairs: Vec<(u8, f32)> = fans.iter().map(|f| (f.fan_id, f.rpm)).collect();
-    let cpu = pick(&pairs, 0, max);
-    let gpu = pick(&pairs, 1, max).or_else(|| {
-        pairs
-            .iter()
-            .find(|(id, _)| *id != 0)
-            .map(|(_, rpm)| make(*rpm, max))
-    });
+/// * `pref`：用户手动指定的 CPU 风扇号（`None` = 自动）。自动时按 FanID 约定取 0 号；
+/// * 同一个风扇号不会被同时当成 CPU 和 GPU（`cpu_id` 先占位，GPU 从剩下的里挑）；
+/// * 读数不可信的号直接跳过——宁可显示 `--`，也不拿别的风扇的数值冒充。
+fn map_fans(
+    fans: &[msr_bridge::LenovoFan],
+    max: Option<f32>,
+    pref: Option<u8>,
+) -> (Option<VendorFan>, Option<VendorFan>) {
+    let all: Vec<(u8, f32)> = fans.iter().map(|f| (f.fan_id, f.rpm)).collect();
+    let valid: Vec<(u8, f32)> = all
+        .iter()
+        .copied()
+        .filter(|(_, rpm)| plausible(*rpm, max))
+        .collect();
+
+    let cpu_id = choose_cpu_id(&all, &valid, pref);
+    let cpu = cpu_id.and_then(|id| pick(&valid, id, max));
+    let gpu = pick(&valid, GPU_FAN_ID, max)
+        .filter(|_| Some(GPU_FAN_ID) != cpu_id)
+        .or_else(|| {
+            valid
+                .iter()
+                .filter(|(id, _)| Some(*id) != cpu_id)
+                .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+                .map(|(_, rpm)| make(*rpm, max))
+        });
     (cpu, gpu)
+}
+
+/// 挑 CPU 风扇号：**手动指定 > FanID 0 > 「压根没有 0 号」时取转得最快的**。
+///
+/// 最后那级兜底只在整机**没有 0 号风扇**时启用（说明 BIOS 没按 0=CPU 约定编号，
+/// 此时每个号都是猜）。若 0 号存在但读数不可信，则如实返回 `None`
+/// ——把 GPU 风扇的转速显示成 CPU 风扇属于编造，本项目不做。
+fn choose_cpu_id(all: &[(u8, f32)], valid: &[(u8, f32)], pref: Option<u8>) -> Option<u8> {
+    if let Some(id) = pref {
+        if valid.iter().any(|(i, _)| *i == id) {
+            return Some(id);
+        }
+    }
+    if valid.iter().any(|(i, _)| *i == CPU_FAN_ID) {
+        return Some(CPU_FAN_ID);
+    }
+    if all.iter().any(|(i, _)| *i == CPU_FAN_ID) {
+        return None;
+    }
+    valid
+        .iter()
+        .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(i, _)| *i)
 }
 
 /// 从 `(fan_id, rpm)` 列表里取指定号，换算成 `VendorFan`
@@ -182,6 +268,7 @@ impl VendorProbe {
         };
         Self {
             vendor: Vendor::Lenovo,
+            pref: FanPrefStore::in_memory(None),
             stub: Some((mk(cpu_rpm), mk(gpu_rpm))),
         }
     }
@@ -190,6 +277,7 @@ impl VendorProbe {
     pub fn silent_for_test() -> Self {
         Self {
             vendor: Vendor::Lenovo,
+            pref: FanPrefStore::in_memory(None),
             stub: Some((None, None)),
         }
     }
@@ -203,6 +291,7 @@ mod tests {
     fn other_vendor_yields_nothing() {
         let mut p = VendorProbe {
             vendor: Vendor::Other,
+            pref: FanPrefStore::in_memory(None),
             stub: None,
         };
         assert_eq!(p.sample(), (None, None));
@@ -222,6 +311,7 @@ mod tests {
         };
         let mut p = VendorProbe {
             vendor: Vendor::Lenovo,
+            pref: FanPrefStore::in_memory(None),
             stub: Some((Some(cpu), None)),
         };
         let (c, g) = p.sample();
@@ -238,6 +328,7 @@ mod tests {
     fn sampling_has_no_time_window_cache() {
         let mut p = VendorProbe {
             vendor: Vendor::Lenovo,
+            pref: FanPrefStore::in_memory(None),
             stub: Some((Some(make(1000.0, None)), None)),
         };
         assert_eq!(p.sample().0.map(|f| f.rpm), Some(1000.0));
@@ -253,7 +344,7 @@ mod tests {
             msr_bridge::LenovoFan { fan_id: 0, rpm: 2900.0 },
             msr_bridge::LenovoFan { fan_id: 1, rpm: 2750.0 },
         ];
-        let (cpu, gpu) = map_fans(&fans, Some(4500.0));
+        let (cpu, gpu) = map_fans(&fans, Some(4500.0), None);
         assert_eq!(cpu.as_ref().map(|f| f.rpm), Some(2900.0));
         assert_eq!(gpu.as_ref().map(|f| f.rpm), Some(2750.0));
         // 来源文案带上曲线上限
@@ -267,16 +358,85 @@ mod tests {
             msr_bridge::LenovoFan { fan_id: 0, rpm: 2900.0 },
             msr_bridge::LenovoFan { fan_id: 2, rpm: 1800.0 },
         ];
-        let (cpu, gpu) = map_fans(&fans, None);
+        let (cpu, gpu) = map_fans(&fans, None, None);
         assert_eq!(cpu.as_ref().map(|f| f.rpm), Some(2900.0));
         assert_eq!(gpu.as_ref().map(|f| f.rpm), Some(1800.0));
         assert_eq!(gpu.unwrap().source, "联想 EC");
     }
 
+    /// 手动指定优先于 FanID 约定：把 1 号指定成 CPU 后，0 号让给 GPU
+    #[test]
+    fn map_fans_honors_manual_cpu_choice() {
+        let fans = vec![
+            msr_bridge::LenovoFan { fan_id: 0, rpm: 2900.0 },
+            msr_bridge::LenovoFan { fan_id: 1, rpm: 2750.0 },
+        ];
+        let (cpu, gpu) = map_fans(&fans, Some(4500.0), Some(1));
+        assert_eq!(cpu.as_ref().map(|f| f.rpm), Some(2750.0));
+        assert_eq!(gpu.as_ref().map(|f| f.rpm), Some(2900.0));
+    }
+
+    /// 指定了一个不存在的号 → 退回自动，而不是什么都不显示
+    #[test]
+    fn map_fans_ignores_missing_manual_choice() {
+        let fans = vec![msr_bridge::LenovoFan { fan_id: 0, rpm: 2900.0 }];
+        let (cpu, _) = map_fans(&fans, Some(4500.0), Some(5));
+        assert_eq!(cpu.as_ref().map(|f| f.rpm), Some(2900.0));
+    }
+
+    /// 同一个风扇不许同时当 CPU 和 GPU（只有一个风扇时 GPU 必须为空）
+    #[test]
+    fn map_fans_never_reuses_one_fan_for_both() {
+        let fans = vec![msr_bridge::LenovoFan { fan_id: 0, rpm: 2900.0 }];
+        let (cpu, gpu) = map_fans(&fans, Some(4500.0), None);
+        assert_eq!(cpu.as_ref().map(|f| f.rpm), Some(2900.0));
+        assert!(gpu.is_none());
+    }
+
+    /// 压根没有 0 号（BIOS 没按约定编号）→ 取转得最快的那个当 CPU
+    #[test]
+    fn map_fans_falls_back_to_fastest_without_zero() {
+        let fans = vec![
+            msr_bridge::LenovoFan { fan_id: 3, rpm: 1200.0 },
+            msr_bridge::LenovoFan { fan_id: 4, rpm: 3100.0 },
+        ];
+        let (cpu, gpu) = map_fans(&fans, Some(4500.0), None);
+        assert_eq!(cpu.as_ref().map(|f| f.rpm), Some(3100.0));
+        assert_eq!(gpu.as_ref().map(|f| f.rpm), Some(1200.0));
+    }
+
+    /// 0 号存在但读数不可信 → 如实为空，**不拿 GPU 风扇冒充 CPU 风扇**
+    #[test]
+    fn untrusted_cpu_reading_is_not_substituted() {
+        let fans = vec![
+            msr_bridge::LenovoFan { fan_id: 0, rpm: 65535.0 },
+            msr_bridge::LenovoFan { fan_id: 1, rpm: 2800.0 },
+        ];
+        let (cpu, gpu) = map_fans(&fans, Some(4500.0), None);
+        assert!(cpu.is_none(), "CPU 读数不可信时应为 None，不能拿 1 号顶替");
+        assert_eq!(gpu.as_ref().map(|f| f.rpm), Some(2800.0));
+    }
+
+    /// 脏值校验：哨兵 / 负数 / 超限 / 正常
+    #[test]
+    fn plausible_rejects_garbage() {
+        assert!(!plausible(65535.0, Some(4500.0)));
+        assert!(!plausible(-1.0, Some(4500.0)));
+        assert!(!plausible(f32::NAN, Some(4500.0)));
+        // 超过曲线上限 1.5 倍
+        assert!(!plausible(9000.0, Some(4500.0)));
+        assert!(plausible(5000.0, Some(4500.0)));
+        // 停转是合法状态，不许被过滤掉
+        assert!(plausible(0.0, Some(4500.0)));
+        // 没有上限时退到机械常识上限
+        assert!(!plausible(25000.0, None));
+        assert!(plausible(3000.0, None));
+    }
+
     /// 空列表（桥接在跑但一个风扇都没读到）→ 两个读数都是 None
     #[test]
     fn map_fans_handles_empty() {
-        assert_eq!(map_fans(&[], Some(4500.0)), (None, None));
+        assert_eq!(map_fans(&[], Some(4500.0), None), (None, None));
     }
 
     /// CPU/GPU 的选择逻辑：FanID 0 → CPU，FanID 1 → GPU

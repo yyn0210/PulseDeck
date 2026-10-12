@@ -8,7 +8,7 @@
 //!   （里面还有进程榜与磁盘列表），所以单独给一个 `pet_metrics`。
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use serde::{Deserialize, Serialize};
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
@@ -185,6 +185,19 @@ fn config_path() -> std::path::PathBuf {
 /* ------------------------------ 窗口 ------------------------------ */
 
 /// 按配置同步窗口的存在与否：开 → 没有就建；关 → 有就销毁
+///
+/// ⚠⚠ **绝不能在「同步 Tauri 命令」或事件回调里调用本函数**（Windows）。
+///
+/// `WebviewWindowBuilder::build()` 的官方 "Known issues" 写着：Windows 下它在同步命令和
+/// 事件处理器里会**死锁**。机理：同步命令跑在**主线程的 WebView2 IPC 回调里**
+/// （`WebMessageReceived`），此时 `build()` 会内联执行 `CreateCoreWebView2Controller`，
+/// wry 用 `wait_with_pump()` 起一个嵌套 `GetMessage` 循环等 COM 完成回调；
+/// 但线程还卡在 WebView2 的回调里，COM 完成回调投递不进来 → 永远等不到 →
+/// **整个进程卡死**（界面无响应，连托盘「退出」都不生效，只能任务管理器杀进程）。
+///
+/// 所以调用方（`set_pet_config`）必须是 **async 命令**：命令跑在 tokio 线程上，
+/// `build()` 只是把创建请求 post 给事件循环，由主线程在正常的消息循环上下文里建窗口。
+/// 回归测试：`set_pet_config_is_async_command`（lib.rs 里改回同步会直接编译失败/测试红）。
 pub fn sync_window(app: &tauri::AppHandle, config: &PetConfig) -> tauri::Result<()> {
     let exists = app.get_webview_window(WINDOW_LABEL).is_some();
     plog(format!(
@@ -206,7 +219,63 @@ pub fn sync_window(app: &tauri::AppHandle, config: &PetConfig) -> tauri::Result<
     Ok(())
 }
 
+/* ------------------- 主窗口的 WebView2 环境（复用） ------------------- */
+
+/// 主窗口的 `ICoreWebView2Environment`，**只在主线程取一次，之后一直复用**。
+///
+/// 为什么必须缓存：`with_webview` 只有在**主线程**上调用才会同步拿到环境——
+/// `send_user_message` 在非主线程时只是把消息 post 给事件循环就返回了，回调根本还没跑
+/// （见 tauri-runtime-wry 的 `send_user_message`）。而宠物窗口的创建/销毁**必须离开
+/// 同步命令**（原因见 `sync_window` 上的注释），那一刻已经不在主线程上了，`with_webview`
+/// 只会拿到 `None` → 宠物窗口退回「独立环境」→ 以 `HRESULT(0x8007139F)` 静默建不出来。
+/// 所以趁启动阶段（`setup()`：主线程、且不在任何 WebView2 回调里）先把环境存下来。
+#[cfg(windows)]
+static MAIN_ENV: OnceLock<Option<EnvHolder>> = OnceLock::new();
+
+#[cfg(windows)]
+#[derive(Clone)]
+struct EnvHolder(webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Environment);
+
+// SAFETY: 只在主线程写入（setup 里 set 一次）、只在主线程读取（建宠物窗口时）。
+// 持有的是一份强引用，保证环境对象在整个进程存活期内不被释放。
+#[cfg(windows)]
+unsafe impl Send for EnvHolder {}
+#[cfg(windows)]
+unsafe impl Sync for EnvHolder {}
+
+/// 在**主线程**上取一次主窗口的 WebView2 环境并缓存下来。
+///
+/// 必须从 `setup()` 里调用（那时主窗口已建好，且不在任何 WebView2 回调内部）。
+#[cfg(windows)]
+pub fn capture_main_environment(app: &tauri::AppHandle) {
+    let env = get_main_environment(app);
+    plog(if env.is_some() {
+        "capture_main_environment: 已缓存主窗口的 WebView2 环境"
+    } else {
+        "capture_main_environment: ⚠ 取不到主窗口环境，宠物窗口将退回独立环境（可能建不出来）"
+    });
+    let _ = MAIN_ENV.set(env.map(EnvHolder));
+}
+
+/// 取主窗口环境：优先用启动时的缓存；没缓存到就现场再取一次（此刻若在主线程上仍有效）
+#[cfg(windows)]
+fn main_environment(
+    app: &tauri::AppHandle,
+) -> Option<webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Environment> {
+    if let Some(slot) = MAIN_ENV.get() {
+        return slot.as_ref().map(|h| h.0.clone());
+    }
+    let env = get_main_environment(app);
+    if env.is_some() {
+        let _ = MAIN_ENV.set(env.clone().map(EnvHolder));
+    }
+    env
+}
+
 /// 从主窗口获取 WebView2 环境（用于共享给宠物窗口）。
+///
+/// ⚠ **只有主线程调用才有返回值**：`with_webview` 走 `send_user_message`，
+/// 主线程上同步执行回调，非主线程上只是 post 一条消息（返回时回调还没跑）。
 ///
 /// 用 `with_webview` 在主线程同步拿环境。虽然回调要求 `Send`，
 /// 但 `send_user_message` 在主线程是同步执行的（见 tauri-runtime-wry 的
@@ -253,11 +322,13 @@ fn create_window(app: &tauri::AppHandle) -> tauri::Result<()> {
     // 但 `send_user_message` 在主线程是同步执行的（见 tauri-runtime-wry 的
     // `send_user_message` 实现：当前线程 == 主线程时直接 `handle_user_message`），
     // 所以这里用 `unsafe impl Send` 绕过类型约束是安全的——回调根本不会跨线程。
-    let environment = get_main_environment(app);
+    // 环境取**缓存**的那份，不要在这里现取：本函数可能不在主线程上跑
+    // （见 sync_window 的注释），那时 `with_webview` 是拿不到环境的。
+    let environment = main_environment(app);
     if environment.is_some() {
         plog("复用主窗口的 WebView2 环境");
     } else {
-        plog("⚠ 主窗口不存在，宠物窗口将使用独立环境");
+        plog("⚠ 没有主窗口环境，宠物窗口将使用独立环境（多半会以 0x8007139F 建不出来）");
     }
 
     let mut builder = WebviewWindowBuilder::new(app, WINDOW_LABEL, url)
@@ -454,6 +525,44 @@ mod tests {
             cap.contains("\"pet\""),
             "capabilities/default.json 的 windows 列表必须含 pet，否则宠物窗口的 \
              invoke 全部被拒。"
+        );
+    }
+
+    /// **`set_pet_config` 必须是 async 命令**：改回同步会在 Windows 上死锁。
+    ///
+    /// 同步命令跑在主线程的 WebView2 IPC 回调里，`WebviewWindowBuilder::build()`
+    /// 在那里会永久等不到 `CreateCoreWebView2Controller` 的 COM 完成回调
+    /// （机理见 `sync_window` 的注释）→ 进程卡死、退出都关不掉。
+    ///
+    /// 只卡「是不是 async」，不管其它：这是唯一能让「首次启用宠物卡死」复发的改动。
+    #[test]
+    fn set_pet_config_is_async_command() {
+        let lib = include_str!("lib.rs");
+        assert!(
+            lib.contains("async fn set_pet_config"),
+            "lib.rs 的 set_pet_config 必须是 async 命令。\
+             同步命令 = 在主线程的 WebView2 IPC 回调里建窗口 = Windows 死锁\
+             （整个进程卡住、退出关不掉，只能任务管理器杀进程）。"
+        );
+    }
+
+    /// 启动时必须在**主线程**把主窗口的 WebView2 环境缓存下来，
+    /// 否则宠物窗口会因为拿不到环境而退回独立环境（`0x8007139F`，静默建不出来）。
+    #[test]
+    fn setup_captures_main_environment_before_window_sync() {
+        let lib = include_str!("lib.rs");
+        let cap = lib
+            .find("pet::capture_main_environment")
+            .unwrap_or_else(|| panic!("setup() 必须调用 pet::capture_main_environment"));
+        // 取**最后一次**出现：`set_pet_config` 里也有一处 `pet::sync_window`，
+        // 而我们要卡的是 setup 里那一处（它在文件更靠后的位置）。
+        let sync = lib
+            .rfind("pet::sync_window")
+            .unwrap_or_else(|| panic!("lib.rs 里找不到 pet::sync_window"));
+        assert!(
+            cap < sync,
+            "capture_main_environment 必须在 sync_window 之前：\
+             先缓存环境，再建宠物窗口（否则同步阶段现取不到环境）。"
         );
     }
 

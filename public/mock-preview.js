@@ -228,6 +228,8 @@
   const settings = { autostart: false, closeToTray: true };
   // 桌面宠物：预览模式下不真的开窗，只把配置存起来，供 pet.html?mock=1 读取
   let petConfig = { enabled: false, metrics: ["cpu", "mem", "gpu"], opacity: 1 };
+  // 风扇号手动指定：null = 自动（与后端 FanPref 同构，越界的号会被清洗成 null）
+  let fanPrefCpuId = null;
 
   window.__TAURI_INTERNALS__ = {
     invoke(cmd, args) {
@@ -270,7 +272,24 @@
             elevatedActive: fanOn,
             lenovoFanReady: lenovo && fanOn,
             needsEnable: lenovo && !fanOn,
+            // 「CPU 风扇」下拉的备选项
+            lenovoFans:
+              lenovo && fanOn
+                ? [
+                    { fanId: 0, rpm: rnd(2900, 300) },
+                    { fanId: 1, rpm: rnd(2700, 300) },
+                  ]
+                : [],
+            cpuFanId: fanPrefCpuId,
           });
+        case "get_fan_pref":
+          return Promise.resolve({ cpuFanId: fanPrefCpuId });
+        case "set_fan_pref": {
+          const id = args.pref && args.pref.cpuFanId;
+          // 复刻后端的清洗规则：越界的号退回「自动」
+          fanPrefCpuId = id == null || id > 7 ? null : id;
+          return Promise.resolve({ cpuFanId: fanPrefCpuId });
+        }
         case "get_pet_config":
           return Promise.resolve(petConfig);
         case "set_pet_config": {

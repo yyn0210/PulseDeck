@@ -95,6 +95,11 @@ impl FanProbe {
         }
     }
 
+    /// 注入风扇偏好句柄（与设置页共用同一份，避免各读各的 `fan.json`）
+    pub fn set_pref(&mut self, pref: crate::fan_pref::FanPrefStore) {
+        self.vendor.set_pref(pref);
+    }
+
     /// 采样一次。`gpu_count` 用于按顺序分配 GPU 风扇读数。
     pub fn sample(&mut self, gpu_count: usize) -> FanReport {
         self.refresh_hw_if_due();
@@ -189,14 +194,29 @@ impl FanProbe {
     }
 }
 
+/// 液冷/水泵传感器的名字关键字。
+///
+/// 一体式水冷（AIO）的水泵在 OHM/LHM 里**也是 `Fan` 传感器**，名字通常带
+/// Pump / Water / AIO / Liquid / Coolant。水泵转速往往比 CPU 风扇还高，
+/// 若不做排除，「按转速取最大」就会把泵速显示成 CPU 风扇转速。
+const COOLANT_WORDS: [&str; 5] = ["pump", "water", "aio", "liquid", "coolant"];
+
+/// 传感器是不是水泵/液冷（而不是风扇）
+fn is_coolant(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    COOLANT_WORDS.iter().any(|w| lower.contains(w))
+}
+
 /// 从传感器列表里挑 CPU 风扇：优先封装/CPU 标识，其次按名字含 cpu 的
 fn pick_cpu_fan(fans: &[HwFan], source: &str) -> FanReading {
     let pick = fans
         .iter()
+        .filter(|f| !is_coolant(&f.name))
         .filter(|f| f.kind == "cpu")
         .max_by(|a, b| a.rpm.partial_cmp(&b.rpm).unwrap_or(std::cmp::Ordering::Equal))
         .or_else(|| {
             fans.iter()
+                .filter(|f| !is_coolant(&f.name))
                 .find(|f| f.name.to_ascii_lowercase().contains("cpu"))
         });
     match pick {
@@ -211,7 +231,11 @@ fn pick_cpu_fan(fans: &[HwFan], source: &str) -> FanReading {
 
 /// 从传感器列表里挑第 `index` 块 GPU 的风扇
 fn pick_gpu_fan(fans: &[HwFan], source: &str, index: usize) -> FanReading {
-    let gpu_fans: Vec<&HwFan> = fans.iter().filter(|f| f.kind == "gpu").collect();
+    // 同 CPU 侧：显卡水冷的泵速也不算显卡风扇
+    let gpu_fans: Vec<&HwFan> = fans
+        .iter()
+        .filter(|f| f.kind == "gpu" && !is_coolant(&f.name))
+        .collect();
     let Some(f) = gpu_fans
         .iter()
         .filter(|f| f.name.to_ascii_lowercase().contains("#0") || index == 0)
@@ -337,6 +361,36 @@ mod tests {
         assert!(cpu_hint(Some(Vendor::Lenovo)).contains("联想"));
         assert!(cpu_hint(Some(Vendor::Other)).contains("公开接口"));
         assert!(cpu_hint(None).contains("公开接口"));
+    }
+
+    /// 水泵/液冷传感器不能被当成 CPU 风扇——AIO 的泵速往往比风扇还高，
+    /// 按转速取最大时会顶掉真正的风扇读数
+    #[test]
+    fn coolant_sensor_is_not_cpu_fan() {
+        let fans = vec![
+            fan("cpu", "CPU Fan", 1800.0, true),
+            fan("cpu", "Water Pump", 3200.0, true),
+        ];
+        let r = pick_cpu_fan(&fans, "root\\OpenHardwareMonitor");
+        assert_eq!(r.rpm, Some(1800.0));
+    }
+
+    /// 只有水泵时也不能拿泵速顶 CPU 风扇的位置（宁可显示 `--`）
+    #[test]
+    fn coolant_only_gives_no_cpu_fan() {
+        let fans = vec![fan("cpu", "AIO Pump", 3200.0, true)];
+        assert!(!pick_cpu_fan(&fans, "src").any());
+    }
+
+    /// GPU 侧同理：显卡水冷的泵速不算显卡风扇
+    #[test]
+    fn coolant_sensor_is_not_gpu_fan() {
+        let fans = vec![
+            fan("gpu", "GPU Fan", 1500.0, true),
+            fan("gpu", "Liquid Pump", 4000.0, true),
+        ];
+        let r = pick_gpu_fan(&fans, "src", 0);
+        assert_eq!(r.rpm, Some(1500.0));
     }
 
     #[test]

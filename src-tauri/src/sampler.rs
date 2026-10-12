@@ -53,6 +53,12 @@ impl Sampler {
         }
     }
 
+    /// 注入风扇偏好句柄：设置页改了「CPU 风扇号」，采样线程必须立刻用上同一份。
+    /// 不做注入的话，两边各自 `load()` 一次 `fan.json`，改动就只在设置页生效。
+    pub fn set_fan_pref(&self, pref: crate::fan_pref::FanPrefStore) {
+        self.inner.lock().unwrap().fan.set_pref(pref);
+    }
+
     /// 启动时预热：CPU 占用需要两次采样才有值，先跑一轮避免首屏全 0
     pub fn warmup(&self) {
         {
