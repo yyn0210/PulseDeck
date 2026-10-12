@@ -1,0 +1,71 @@
+# Release：推送 v* 标签时打包 NSIS 安装包并自动创建 GitHub Release
+#
+# 用法：
+#   1. 同步版本号（package.json / src-tauri/tauri.conf.json / src-tauri/Cargo.toml，
+#      workflow 会校验 tag 与 tauri.conf.json 一致，不一致直接失败）
+#   2. git tag v0.x.y && git push origin v0.x.y
+#
+# 安装包文件名里的版本号来自 tauri.conf.json 的 version 字段。
+
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: 打包并发布
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Rust（stable, msvc）
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 Cargo（注册表 + target）
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: 安装 Node 22（Vite 7 要求 ≥ 20.19）
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: 安装前端依赖
+        run: npm install
+
+      - name: 校验 tag 与 tauri.conf.json 版本一致
+        shell: pwsh
+        run: |
+          $conf = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          $tag = "${{ github.ref_name }}" -replace '^v', ''
+          if ($conf -ne $tag) {
+            Write-Error "tag (v$tag) 与 tauri.conf.json 的 version ($conf) 不一致，请先同步版本号再打标签"
+          }
+
+      # 出正式包之前再跑一遍单测，防止带着回归打版
+      - name: 发布前 Rust 单测
+        run: cargo test -p pulse-deck
+
+      # tauri-action 会执行 tauri build（含 beforeBuildCommand），出 NSIS 安装包
+      # 并上传到 GitHub Release，不会走裸 cargo build
+      - name: 构建 NSIS 安装包并发布 Release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: '脉盘 PulseDeck ${{ github.ref_name }}'
+          releaseBody: 'Windows x64 安装包（NSIS）。下载 PulseDeck_x64-setup.exe 安装即可；读取 CPU 温度/风扇转速需在设置页启用「高级采集」（管理员桥接）。'
+          releaseDraft: false
+          prerelease: false
