@@ -637,7 +637,7 @@ http://localhost:1420/pet.html?mock=1&pawnio=missing&nogpu=1  # 连 GPU 占用�
   IntelMSR 模块来自 [namazso/PawnIO.Modules](https://github.com/namazso/PawnIO.Modules)
 - [OpenHardwareMonitor](https://openhardwaremonitor.org) / [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor)
   —— WMI `Sensor` 通道的兼容对象与 PawnIO 安装器分发先例
-- 联想 LegionZone 的公开行为为厂商通道逆向提供了参照（见 `docs/LegionZone采集机制分析.md`）
+- 厂商风扇通道的适配参考了联想 LegionZone 的可观察行为；同一组标准 WMI 接口亦被 LenovoLegionToolkit 等开源社区工具广泛使用
 
 ## 许可证
 
