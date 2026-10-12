@@ -1,6 +1,6 @@
-# Win 系统监控（Tauri）
+# 脉盘 PulseDeck（Tauri）
 
-Windows 桌面系统监控小工具，实时监控 **CPU / 内存 / 硬盘 / 电池 / 电源功率 / GPU / 网络 / 温度**。  
+桌面系统监控小工具，实时监控 **CPU / 内存 / 硬盘 / 电池 / 电源功率 / GPU / 网络 / 温度**。  
 后端 Rust + Tauri 2，前端 Vite + 原生 JS（图表全部 canvas 手绘，无第三方图表库）。  
 托盘常驻 + 开机自启，关闭窗口不退出。
 
@@ -70,7 +70,7 @@ Windows 桌面系统监控小工具，实时监控 **CPU / 内存 / 硬盘 / 电
 
 | 部分 | 位置与说明                                                                                                         |
 | -- | ------------------------------------------------------------------------------------------------------------- |
-| 配置 | `pet.json`（`%LOCALAPPDATA%\WinMonitor\`），启动时由 Rust 读回，**不依赖主窗口先起来**                                           |
+| 配置 | `pet.json`（`%LOCALAPPDATA%\PulseDeck\`），启动时由 Rust 读回，**不依赖主窗口先起来**                                           |
 | 窗口 | `src-tauri/src/pet.rs`：`sync_window()` 按配置建 / 销毁；默认落在主显示器工作区右下角。窗口 **190×224**（高度跟着 15:16 的贴图走）        |
 | 读数 | 专用命令 `get_pet_metrics`（只回 CPU / 内存 / GPU / 温度四个数，不搬整份快照）                                                      |
 | 形象 | `src/assets/pet/t<档位>_<帧>.png`（6×8），由 `tools/copy_pet_frames.py` 从 `src/assets/img/pet/*.png` 抠底生成                |
@@ -134,8 +134,8 @@ python tools/preview_pet_frames.py         # 人眼验收：出 shots/pet_frames
 界面上就是「纯透明 = 什么都没有」，肉眼分不清是关了还是坏了。所以：
 
 1. 设置页「桌面宠物」里有 **宠物窗口** 状态行：`运行中` / `窗口在，但页面没有心跳` / `窗口未创建`；
-2. 需要落盘时用 `WINMON_PET_TRACE=1` 启动应用，页面每次心跳会覆盖写  
-   `%LOCALAPPDATA%\WinMonitor\pet.trace`（形如 `beat ts_ms=… window_open=true`）——  
+2. 需要落盘时用 `PULSEDECK_PET_TRACE=1` 启动应用，页面每次心跳会覆盖写  
+   `%LOCALAPPDATA%\PulseDeck\pet.trace`（形如 `beat ts_ms=… window_open=true`）——  
    文件在长就是页面在跑，不在就是 WebView 没起来；
 3. 想用 DevTools 看页面本身，在 `tauri.conf.json` 的窗口配置里加  
    `"additionalBrowserArgs": "--remote-debugging-port=9333"`，同时把  
@@ -165,13 +165,13 @@ python tools/preview_pet_frames.py         # 人眼验收：出 shots/pet_frames
 
 2026-10-11 排查「宠物心跳只走一拍就冻结」耗时一整天，最终证实是**测试环境假象**：
 
-- 从 WorkBuddy 等 AI 工具的沙箱 shell 启动 `win-monitor.exe`，沙箱会把  
+- 从 WorkBuddy 等 AI 工具的沙箱 shell 启动 `pulse-deck.exe`，沙箱会把  
   `tsbx.dll` 注入整个进程树，随之进入 WebView2 的 **browser 进程**；
 - Chromium 完整性自检在启动 **~5.5s** 时触发 `FAIL_FAST (0x80000003)`，  
   browser 进程崩溃、渲染器被整体带走——页面 JS 跑完第一拍就永远静止；
 - 窗口 HWND 还在（原生壳由 wry 持有）、`SendMessageTimeout` 灵敏、主进程存活，  
   一切「看起来活着」，只有页面死了；
-- 崩溃证据在 `%LOCALAPPDATA%\com.jianluo.winmonitor\EBWebView\Crashpad\reports\*.dmp`  
+- 崩溃证据在 `%LOCALAPPDATA%\com.jianluo.pulsedeck\EBWebView\Crashpad\reports\*.dmp`  
   （minidump，`ptype=browser`、模块列表里能看到注入的 `tsbx.dll`）；  
   **别家 Tauri 应用（Clash Verge）从同一沙箱启动也照样崩**——是机器级现象；
 - 用户双击启动（沙箱外）完全正常：主窗口、宠物都渲染，数据持续刷新。
@@ -247,7 +247,7 @@ LibreHardwareMonitor 自 **0.9.5 起已删除自带的 WMI 提供程序**，`roo
 本机（台式 / 虚拟机）实测既无 ACPI 热区实例、`Thermal Zone Information` 又恒定返回  
 `273`（对应 0°C，是无实现的假读数），因此代码会先换算成摄氏度、再用合理区间过滤掉这类值。  
 若以上通道都拿不到（例如非 Intel 平台且固件不暴露热区），界面显示 `--` 并给出具体原因 ——  
-`%LOCALAPPDATA%\WinMonitor\pawnio.log` 里会有提权桥接进程留下的失败明细。
+`%LOCALAPPDATA%\PulseDeck\pawnio.log` 里会有提权桥接进程留下的失败明细。
 
 > 逆向笔记：联想 LegionZone 取 CPU 温度的主路径是私有 WMI 提供程序 `root\wmi:LZWmiX80`  
 > （方法 `Query_CAPABILITY_DATA_00/01` 返回 `LENOVO_CAPABILITY_DATA_xx` 二进制 blob，内嵌  
@@ -265,7 +265,7 @@ PawnIO 是一个**通用**内核驱动：它本身不含硬件逻辑，只负责
 
 1. 主程序启动时先探测 PawnIO 设备（`CreateFileW` 的失败码即可区分「没装」/「装了但没权限」）；  
    **未安装就直接不拉**，交给界面引导（见下节）；已安装则检查  
-   `%LOCALAPPDATA%\WinMonitor\pawnio.json`，**没有新鲜读数**才拉起桥接进程，  
+   `%LOCALAPPDATA%\PulseDeck\pawnio.json`，**没有新鲜读数**才拉起桥接进程，  
    且**一个会话只尝试一次**，不会反复弹 UAC；
 2. 桥接进程是**本 exe 自己**（命令行带 `--pawnio-bridge --module <path> --out <path> --parent-pid <pid>`），  
    用 `ShellExecuteExW` 的 `runas` 动词 + 隐藏窗口启动 —— 首次运行会弹**一次 UAC**；
@@ -341,7 +341,7 @@ Usage: PawnIOSetup.exe [-install] [-uninstall] [-unrestricted] [-debuginfo] [-si
 > 本机（RTX 3060 Laptop + 12th Gen Intel）实测：`nvml.fan_speed(0)` 返回 `Err(InvalidArg)`、  
 > `Win32_Fan.DesiredSpeed` 为空、未装 OHM/LHM → 通用通道全读不到；  
 > 但**联想通道提权后可读到 CPU 风扇 ≈ 3007 RPM、GPU 风扇 ≈ 2978 RPM**。  
-> 用 `cargo test -p win-monitor diag::probe_fan -- --nocapture` 可以复现通用通道的判断过程。
+> 用 `cargo test -p pulse-deck diag::probe_fan -- --nocapture` 可以复现通用通道的判断过程。
 >
 > CPU 侧还有个更深的现状：CPU 风扇在非联想机型上挂在主板 Super I/O / EC 上，即便是本工具已有的  
 > PawnIO 通道也帮不上忙 —— 实测 `IntelMSR.bin` 只导出 `ioctl_read_msr` / `cpuid` / `msr_read` /  
@@ -396,7 +396,7 @@ npm run build      # 产出安装包 / exe（src-tauri/target/release）
 npm run build:exe  # 只产出 exe，跳过 NSIS 打包
 ```
 
-Release 产物：`src-tauri/target/release/win-monitor.exe`，  
+Release 产物：`src-tauri/target/release/pulse-deck.exe`，  
 NSIS 安装包：`src-tauri/target/release/bundle/nsis/*.exe`。
 
 > 本项目在 `x86_64-pc-windows-msvc` 下编译验证通过，需要 VS2022 MSVC 工具链与 WebView2 运行时。
@@ -429,24 +429,24 @@ npm run build:exe    # 只出可运行的 exe，跳过安装包（无需 NSIS）
 
 ```bash
 # 完整快照（会打出一份完整 JSON）
-cargo test -p win-monitor smoke::collect_once -- --nocapture
+cargo test -p pulse-deck smoke::collect_once -- --nocapture
 
 # 逐层确认原生数据源
-cargo test -p win-monitor diag::nvml          -- --nocapture   # NVIDIA 驱动读数
-cargo test -p win-monitor diag::probe_gpu     -- --nocapture   # GPU 探测（NVML → PDH）
-cargo test -p win-monitor diag::probe_thermal -- --nocapture   # 温度 + CPU 封装功耗
-cargo test -p win-monitor diag::probe_fan     -- --nocapture   # 风扇转速（NVML / LHM/OHM / ACPI 逐层确认）
-cargo test -p win-monitor diag::probe_battery -- --nocapture   # 电池原始字段（SYSTEM_BATTERY_STATE / WMI）
-cargo test -p win-monitor diag::wmi           -- --nocapture   # WMI 连通性
-cargo test -p win-monitor diag::pawnio_msr    -- --nocapture   # PawnIO 设备 / 模块 / MSR 温度（提权运行才有意义）
-cargo test -p win-monitor diag::pawnio_setup  -- --nocapture   # PawnIO 是否已安装 + 随包安装器是否就位
+cargo test -p pulse-deck diag::nvml          -- --nocapture   # NVIDIA 驱动读数
+cargo test -p pulse-deck diag::probe_gpu     -- --nocapture   # GPU 探测（NVML → PDH）
+cargo test -p pulse-deck diag::probe_thermal -- --nocapture   # 温度 + CPU 封装功耗
+cargo test -p pulse-deck diag::probe_fan     -- --nocapture   # 风扇转速（NVML / LHM/OHM / ACPI 逐层确认）
+cargo test -p pulse-deck diag::probe_battery -- --nocapture   # 电池原始字段（SYSTEM_BATTERY_STATE / WMI）
+cargo test -p pulse-deck diag::wmi           -- --nocapture   # WMI 连通性
+cargo test -p pulse-deck diag::pawnio_msr    -- --nocapture   # PawnIO 设备 / 模块 / MSR 温度（提权运行才有意义）
+cargo test -p pulse-deck diag::pawnio_setup  -- --nocapture   # PawnIO 是否已安装 + 随包安装器是否就位
 ```
 
-WMI 逐步 HRESULT 日志：`WB_WMI_DIAG=1 cargo test -p win-monitor diag::wmi -- --nocapture`
+WMI 逐步 HRESULT 日志：`WB_WMI_DIAG=1 cargo test -p pulse-deck diag::wmi -- --nocapture`
 
 ### 桥接进程会不会留成孤儿
 
-`msr_bridge.rs` 的存活判据有两条用例锁着（`cargo test -p win-monitor msr_bridge::tests`）。  
+`msr_bridge.rs` 的存活判据有两条用例锁着（`cargo test -p pulse-deck msr_bridge::tests`）。  
 其中 `parent_watch_notices_exit_even_when_object_survives` 复刻了「进程已退出但进程对象还没被  
 回收」的场景 —— 旧判据（`OpenProcess` 打不开才算退出）在这个场景下恒为「还活着」，  
 就是 2026-10-10 那个「应用关了还有残留进程」的根因，**别把它改回去**。
@@ -454,7 +454,7 @@ WMI 逐步 HRESULT 日志：`WB_WMI_DIAG=1 cargo test -p win-monitor diag::wmi -
 要看真实二进制（而不是测试里造的场面）的表现，跑验收脚本 —— 不弹 UAC、不开窗口：
 
 ```bash
-npm run build             # 先出包，脚本读 src-tauri/target/release/win-monitor.exe
+npm run build             # 先出包，脚本读 src-tauri/target/release/pulse-deck.exe
 python tools/verify_bridge_exit.py
 ```
 

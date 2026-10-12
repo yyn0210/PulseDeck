@@ -1,8 +1,9 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "WinMonitor",
+  "productName": "PulseDeck",
+  "mainBinaryName": "pulse-deck",
   "version": "0.1.0",
-  "identifier": "com.jianluo.winmonitor",
+  "identifier": "com.jianluo.pulsedeck",
   "build": {
     "beforeDevCommand": "npm run ui",
     "devUrl": "http://localhost:1420",
@@ -12,7 +13,7 @@
   "app": {
     "windows": [
       {
-        "title": "Win 系统监控",
+        "title": "脉盘 PulseDeck",
         "width": 1240,
         "height": 820,
         "minWidth": 940,

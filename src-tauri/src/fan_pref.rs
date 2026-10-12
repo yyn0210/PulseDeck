@@ -1,4 +1,4 @@
-//! 风扇的**用户手动指定**配置（落盘 `%LOCALAPPDATA%\WinMonitor\fan.json`）
+//! 风扇的**用户手动指定**配置（落盘 `%LOCALAPPDATA%\PulseDeck\fan.json`）
 //!
 //! ## 为什么需要它
 //!

@@ -1,4 +1,4 @@
-"""生成 WinMonitor 应用图标（32/128/256 PNG + 多尺寸 ICO）。
+"""生成 PulseDeck 应用图标（32/128/256 PNG + 多尺寸 ICO）。
 
 用法：  python tools/make_icons.py
 依赖：  Pillow（本机系统 Python 3.11 已带）

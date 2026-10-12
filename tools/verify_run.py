@@ -8,12 +8,15 @@ import subprocess
 import sys
 import time
 from ctypes import wintypes
+from pathlib import Path
 
 from PIL import ImageGrab
 
-EXE = r"D:\工作文件\00. 简洛\Win系统监控\src-tauri\target\release\win-monitor.exe"
-OUT_SHOT = r"D:\工作文件\00. 简洛\Win系统监控\shot_app.png"
-OUT_APP_SHOT = r"D:\工作文件\00. 简洛\Win系统监控\shot_app_crop.png"
+ROOT = Path(__file__).resolve().parent.parent
+EXE = str(ROOT / "src-tauri" / "target" / "release" / "pulse-deck.exe")
+SHOT_DIR = ROOT / "shots"
+OUT_SHOT = str(SHOT_DIR / "shot_app.png")
+OUT_APP_SHOT = str(SHOT_DIR / "shot_app_crop.png")
 
 user32 = ctypes.windll.user32
 
@@ -49,7 +52,7 @@ def main():
     time.sleep(18)
 
     alive = proc.poll() is None
-    wins = find_windows("Win 系统监控")
+    wins = find_windows("脉盘 PulseDeck")
     print(f"alive={alive} pid={proc.pid}")
     for w in wins:
         print(f"  win {w}")
@@ -69,7 +72,7 @@ def main():
     time.sleep(25)
     still = proc.poll() is None
     print(f"alive_after_45s={still}")
-    wins2 = find_windows("Win 系统监控")
+    wins2 = find_windows("脉盘 PulseDeck")
     print(f"windows_after={len(wins2)}")
 
     if wins2:

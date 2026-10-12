@@ -95,6 +95,15 @@ body {
   letter-spacing: 0.3px;
 }
 
+/* 品牌英文名：跟在中文名后面做副标，弱化处理不抢主名 */
+.brand-en {
+  margin-left: 8px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.4px;
+  color: var(--text-dim);
+}
+
 .brand-text p {
   margin: 2px 0 0;
   font-size: 12px;

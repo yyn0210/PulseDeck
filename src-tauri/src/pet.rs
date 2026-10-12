@@ -3,7 +3,7 @@
 //! 设计要点：
 //! * **窗口由 Rust 管**：设置页只负责改配置（`set_pet_config`），窗口的创建/销毁发生在这里，
 //!   因此「最小化到托盘」时宠物依然在桌面上，也不需要前端持有窗口句柄。
-//! * **配置落盘**：`%LOCALAPPDATA%\WinMonitor\pet.json`，下次启动自动恢复（不依赖主窗口先起来）。
+//! * **配置落盘**：`%LOCALAPPDATA%\PulseDeck\pet.json`，下次启动自动恢复（不依赖主窗口先起来）。
 //! * **读数走专用命令**：宠物窗口只需要 3~4 个数，不值得每拍搬一整份 `Snapshot`
 //!   （里面还有进程榜与磁盘列表），所以单独给一个 `pet_metrics`。
 
@@ -46,7 +46,7 @@ pub const METRIC_KEYS: [&str; 3] = ["cpu", "mem", "gpu"];
 /// `--disable-backgrounding-occluded-windows --disable-renderer-backgrounding
 /// --disable-background-timer-throttling` 等参数，结果 WebView2 的 **browser 进程**
 /// 启动数秒后在 msedge.dll 内 CHECK 失败（int3，Crashpad dump 落在
-/// `%LOCALAPPDATA%\com.jianluo.winmonitor\EBWebView\Crashpad\reports\`），
+/// `%LOCALAPPDATA%\com.jianluo.pulsedeck\EBWebView\Crashpad\reports\`），
 /// 渲染器被整体带走——表现出来的「定时器只走一拍就冻结」恰恰是这次崩溃的
 /// 症状，而当初加参数想治的「节流」根本不是根因。**不要轻易再加命令行参数。**
 ///
@@ -102,13 +102,13 @@ impl PetConfig {
 #[derive(Clone)]
 pub struct PetStore(Arc<Mutex<PetConfig>>);
 
-/// 排障日志：只有设了 `WINMON_PET_TRACE` 才落盘，正常使用时零开销。
+/// 排障日志：只有设了 `PULSEDECK_PET_TRACE` 才落盘，正常使用时零开销。
 ///
 /// 宠物窗口是「无边框 + 跳过任务栏」的，一旦没建出来，桌面上什么都不显示，
 /// 肉眼完全分不清「配置没读到」还是「建窗失败」还是「页面没跑起来」。
 /// 这条链路上的每一步都记一笔 `pet.log`，出问题时先看它。
 fn plog(msg: impl AsRef<str>) {
-    if std::env::var_os("WINMON_PET_TRACE").is_none() {
+    if std::env::var_os("PULSEDECK_PET_TRACE").is_none() {
         return;
     }
     if let Ok(mut f) = std::fs::OpenOptions::new()
@@ -393,7 +393,7 @@ fn default_position(app: &tauri::AppHandle) -> (f64, f64) {
 /// 宠物窗口是「透明无边框」的，一旦 WebView 没渲染出来，界面上表现就是「什么都没有」，
 /// 用户与开发者都看不出是没开、还是开了但没画出来。所以让页面每秒报一次心跳：
 /// * 设置页可以显示「运行中 / 未响应」，用户自己就能判断；
-/// * 排查时把 `WINMON_PET_TRACE=1` 打开，心跳会落盘到 `%LOCALAPPDATA%\WinMonitor\pet.trace`，
+/// * 排查时把 `PULSEDECK_PET_TRACE=1` 打开，心跳会落盘到 `%LOCALAPPDATA%\PulseDeck\pet.trace`，
 ///   直接回答「页面到底跑起来没有」。
 static LAST_BEAT_MS: AtomicU64 = AtomicU64::new(0);
 
@@ -407,7 +407,7 @@ pub fn now_ms() -> u64 {
 pub fn record_beat(app: &tauri::AppHandle) {
     let ts = now_ms();
     LAST_BEAT_MS.store(ts, Ordering::Relaxed);
-    if std::env::var_os("WINMON_PET_TRACE").is_some() {
+    if std::env::var_os("PULSEDECK_PET_TRACE").is_some() {
         // 覆盖写：每次只留最新一行，避免长时间运行把文件撑大
         let _ = std::fs::write(
             crate::app_dir().join("pet.trace"),

@@ -423,7 +423,7 @@ if (fanCpuSelect) {
 /* PawnIO 未安装时，在监控页顶部提醒用户去设置页安装/启用。
  * 只提醒、不代劳——真正的安装入口在设置页「高级采集」，避免主页面弹 UAC。
  * 点「×」后由用户选：仅本次（不落盘）/ 永久关闭（落 localStorage）。 */
-const TIP_MUTE_KEY = "wm.pawnioTipMuted";
+const TIP_MUTE_KEY = "pd.pawnioTipMuted";
 
 function readTipMuted() {
   try {
@@ -789,7 +789,7 @@ async function initSettings() {
  *
  * 后端会清洗配置（去掉非法指标、至少保留一项、透明度夹到 0.3~1.0），
  * 所以每次提交都用**返回值**回显，避免界面与实际状态不一致。 */
-const PET_KEY = "wm.petConfig";
+const PET_KEY = "pd.petConfig";
 const PET_FALLBACK = { enabled: false, metrics: ["cpu", "mem", "gpu"], opacity: 1 };
 
 const petSwitch = document.getElementById("opt-pet");
@@ -922,7 +922,7 @@ petOpacity.addEventListener("change", () => pushPetCfg(readPetForm()));
 const viewMonitor = document.getElementById("view-monitor");
 const viewSettings = document.getElementById("view-settings");
 const navButtons = Array.from(document.querySelectorAll(".nav-btn"));
-const VIEW_KEY = "wm.activeView";
+const VIEW_KEY = "pd.activeView";
 
 function switchView(name) {
   const toSettings = name === "settings";

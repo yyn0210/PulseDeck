@@ -62,7 +62,7 @@ for (const [tier, list] of [...TIER_FRAMES]) {
   else TIER_FRAMES.delete(tier);
 }
 // 贴图一张都没收到时，窗口会表现为「纯透明 = 什么都没有」。这种失败没有任何 UI 反馈，
-// 所以至少要在控制台留一句（排查时配合 WINMON_PET_TRACE 用）
+// 所以至少要在控制台留一句（排查时配合 PULSEDECK_PET_TRACE 用）
 if (!TIER_FRAMES.size) {
   console.error(
     "宠物贴图为空：src/assets/pet/ 下应有 t<档位>_<帧>.png。先跑 python tools/copy_pet_frames.py 生成。",

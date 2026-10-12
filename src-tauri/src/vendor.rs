@@ -23,7 +23,7 @@
 //! 提权后同一调用立即成功（`CurrentFanSpeed = 3003`）。
 //!
 //! 因此本模块**不在主进程里直接调 WMI**，而是读**提权桥接进程**写出的
-//! `%LOCALAPPDATA%\WinMonitor\pawnio.json`（见 [`crate::msr_bridge`]）。
+//! `%LOCALAPPDATA%\PulseDeck\pawnio.json`（见 [`crate::msr_bridge`]）。
 //! 那个桥接进程本来就要为 PawnIO MSR 温度提权——风扇搭它的便车，
 //! **一次 UAC 同时搞定温度与风扇**。
 //!
@@ -83,7 +83,7 @@ impl Vendor {
 
 /// 厂商通道探针。
 ///
-/// ⚠️ **无节流：每拍都读**。读数由提权桥接进程写进 `%LOCALAPPDATA%\WinMonitor\pawnio.json`，
+/// ⚠️ **无节流：每拍都读**。读数由提权桥接进程写进 `%LOCALAPPDATA%\PulseDeck\pawnio.json`，
 /// 桥接本身是 1Hz 刷新的，而这里读的只是一个几百字节的本地文件（微秒级），
 /// 所以直接跟采样节拍对齐即可。
 ///

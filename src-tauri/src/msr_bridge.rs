@@ -126,7 +126,7 @@ fn local_dir() -> PathBuf {
     std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir)
-        .join("WinMonitor")
+        .join("PulseDeck")
 }
 
 /// 桥接状态文件路径
@@ -503,7 +503,7 @@ fn launch_elevated_hidden(exe: &Path, params: &str) -> Result<(), String> {
 
 /* ------------------------------ 落盘日志 ------------------------------ */
 
-/// 桥接进程没有控制台，出错只能落盘：%LOCALAPPDATA%\WinMonitor\pawnio.log
+/// 桥接进程没有控制台，出错只能落盘：%LOCALAPPDATA%\PulseDeck\pawnio.log
 fn log_err(msg: &str) {
     let dir = local_dir();
     let _ = std::fs::create_dir_all(&dir);

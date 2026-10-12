@@ -120,7 +120,7 @@ fn get_pet_metrics(state: State<'_, AppState>) -> pet::PetMetrics {
 /// 宠物页面每秒报一次心跳。
 ///
 /// 用途见 `pet::LAST_BEAT_MS`：设置页据此显示「运行中 / 未响应」，
-/// 排查「窗口在但没画出来」时可开 `WINMON_PET_TRACE=1` 落盘确认。
+/// 排查「窗口在但没画出来」时可开 `PULSEDECK_PET_TRACE=1` 落盘确认。
 #[tauri::command]
 fn pet_heartbeat(app: tauri::AppHandle) {
     pet::record_beat(&app);
@@ -331,7 +331,7 @@ fn rebuild_tray_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
 fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(app.default_window_icon().cloned().expect("缺少应用图标"))
-        .tooltip("Win 系统监控")
+        .tooltip("脉盘 PulseDeck")
         .show_menu_on_left_click(false)
         .on_tray_icon_event(|tray, event| {
             if let TrayIconEvent::Click {
@@ -390,7 +390,7 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
 /// 把崩溃信息落盘
 ///
 /// release 走 `windows_subsystem = "windows"`，没有控制台，panic 信息会直接消失，
-/// 出问题时全靠这个文件定位。位置：%LOCALAPPDATA%\WinMonitor\crash.log
+/// 出问题时全靠这个文件定位。位置：%LOCALAPPDATA%\PulseDeck\crash.log
 fn install_crash_logger() {
     let dir = app_dir();
     let default_hook = std::panic::take_hook();
@@ -417,12 +417,43 @@ fn install_crash_logger() {
 }
 
 /// 应用数据目录：崩溃日志、桌面宠物配置等运行时文件都放这里
-/// 位置：%LOCALAPPDATA%\WinMonitor
+/// 位置：%LOCALAPPDATA%\PulseDeck
 fn app_dir() -> std::path::PathBuf {
-    std::env::var_os("LOCALAPPDATA")
+    let dir = std::env::var_os("LOCALAPPDATA")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(std::env::temp_dir)
-        .join("WinMonitor")
+        .join("PulseDeck");
+    migrate_legacy_app_dir(&dir);
+    dir
+}
+
+/// 品牌从 WinMonitor 改成 PulseDeck 时，把旧目录里的用户配置搬过来，
+/// 免得桌面宠物开关 / 手动指定的风扇号一夜回到默认值。
+///
+/// 只在 PulseDeck 目录**还不存在**时跑一次；任何一个环节出错都静默跳过——
+/// 迁移失败最多是读默认值，不该拖垮启动。
+fn migrate_legacy_app_dir(new_dir: &std::path::Path) {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        if new_dir.exists() {
+            return;
+        }
+        let Some(parent) = new_dir.parent() else { return };
+        let old_dir = parent.join("WinMonitor");
+        if !old_dir.is_dir() {
+            return;
+        }
+        if std::fs::create_dir_all(new_dir).is_err() {
+            return;
+        }
+        // 只搬用户配置，日志类文件（crash.log / pawnio.log）不搬
+        for name in ["pet.json", "fan.json"] {
+            let src = old_dir.join(name);
+            if src.is_file() {
+                let _ = std::fs::copy(&src, new_dir.join(name));
+            }
+        }
+    });
 }
 
 /// 子进程模式入口：被提权拉起时（带 `--pawnio-bridge`）只跑温度桥接循环，不建窗口。

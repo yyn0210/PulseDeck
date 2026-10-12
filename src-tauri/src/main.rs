@@ -4,8 +4,8 @@
 fn main() {
     // 先看是不是被自己以「MSR 温度桥接」身份提权拉起的：那种情况下不启动窗口，
     // 只跑读温度的子进程循环（详见 msr_bridge.rs）。
-    if win_monitor_lib::run_bridge_if_requested() {
+    if pulse_deck_lib::run_bridge_if_requested() {
         return;
     }
-    win_monitor_lib::run()
+    pulse_deck_lib::run()
 }
