@@ -1,10 +1,66 @@
-# 脉盘 PulseDeck（Tauri）
+<div align="center">
 
-桌面系统监控小工具，实时监控 **CPU / 内存 / 硬盘 / 电池 / 电源功率 / GPU / 网络 / 温度**。  
-后端 Rust + Tauri 2，前端 Vite + 原生 JS（图表全部 canvas 手绘，无第三方图表库）。  
-托盘常驻 + 开机自启，关闭窗口不退出。
+# 脉盘 PulseDeck
 
-## 界面
+** 桌面系统监控小工具 + 会随 CPU 温度换装的桌面宠物**
+
+*A lightweight desktop system monitor with a temperature-reactive desktop pet.*
+
+[![License](https://img.shields.io/badge/License-Apache--2.0-blue)](LICENSE)
+[![Platform](https://img.shields.io/badge/Platform-Windows%2010%2B%20x64-0078D6?logo=windows11)](#下载与安装)
+[![Tauri](https://img.shields.io/badge/Tauri-2.x-FFC131?logo=tauri&logoColor=black)](https://tauri.app)
+[![Release](https://img.shields.io/github/v/release/yyn0210/PulseDeck?display_name=tag&include_prereleases)](https://github.com/yyn0210/PulseDeck/releases)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen)](#参与贡献)
+
+如果它对你有用，欢迎点一个 ⭐ Star 支持一下。
+
+</div>
+
+---
+
+实时监控 **CPU / 内存 / 硬盘 / 电池 / 电源功率 / GPU / 网络 / 温度 / 风扇转速**。
+后端 Rust + Tauri 2，前端 Vite + 原生 JS（图表全部 canvas 手绘，**零第三方图表库 / 前端框架**），
+托盘常驻 + 开机自启，关闭窗口不退出。数据源**诚实降级**：能读到就报，读不到显示 `--` 并给出具体原因，
+绝不拿占空比冒充转速。
+
+<p align="center">
+  <img src="shots/ui_full.png" alt="PulseDeck 主界面" width="880">
+</p>
+
+## 目录
+
+- [功能特性](#功能特性)
+- [界面一览](#界面一览)
+- [下载与安装](#下载与安装)
+- [快速上手](#快速上手)
+- [桌面宠物](#桌面宠物)
+- [数据来源与降级策略](#数据来源与降级策略)
+- [从源码构建](#从源码构建)
+- [调试与自测](#调试与自测)
+- [开发深入笔记](#开发深入笔记)
+- [目录结构](#目录结构)
+- [已知限制](#已知限制)
+- [路线图](#路线图)
+- [参与贡献](#参与贡献)
+- [致谢](#致谢)
+- [许可证](#许可证)
+
+## 功能特性
+
+- **一个面板看全整机**：CPU（占用 / 每核 / 主频 / 温度 / 风扇）、内存（含已提交内存、页面文件）、
+  硬盘（容量 / 读写速率 / 累计量）、电池与电源功率（含 CPU 封装功耗）、GPU（占用 / 显存 / 温度 / 功耗 / 风扇）、
+  网络（速率 / 累计流量 / 每网卡明细）、Top 进程榜（CPU / 内存各 8）
+- **温度与风扇读数是真的**：CPU 温度走 PawnIO + Intel MSR 直读片内 DTS（最准路径），
+  联想机型还能读厂商私有的真实风扇 RPM——绝不拿占空比冒充转速
+- **桌面宠物**：置顶小狐狸在桌面上跑动，显示 CPU / 内存 / GPU 使用率，
+  **形象随 CPU 温度 6 档切换**（38 蓝 → 94 红），过热档还会加速喘气
+- **托盘常驻**：关窗不退出，后台继续采样；支持开机自启、暂停刷新
+- **轻量原生**：Tauri 2 打包，无 Electron、无第三方图表库，canvas 手绘所有图表
+- **隐私友好**：全部采集本地完成，无任何上传 / 遥测
+- **提权最小化**：主程序普通权限运行；读 MSR / 风扇由按需拉起的提权子进程完成，
+  一次 UAC 搞定，绝不静默安装驱动
+
+## 界面一览
 
 | 卡片     | 内容                                                          |
 | ------ | ----------------------------------------------------------- |
@@ -26,171 +82,71 @@
 | 桌面宠物  | 是否启用、显示内容（CPU / 内存 / GPU 使用率）、不透明度；形象按 CPU 温度分 6 档切换 |
 | 高级采集  | 各采集通道状态（PawnIO 内核驱动、厂商风扇通道）+ 未就绪时的操作入口          |
 
-**顶部提示条**：未安装 PawnIO 时，监控页顶部会出现一条可关闭的提醒（`#tipbar`），  
-点「去设置」直接跳到设置页「高级采集」；点「×」后由用户选 **「永久关闭」**（写入  
-`localStorage['wm.pawnioTipMuted']`，跨启动生效）或 **「仅本次」**（只挡本次运行），也可「取消」。  
-永久关闭后，设置页「高级采集」底部会留一条「重新开启」链接，避免变成单向门。  
-提示条只做提醒，**不在主页面弹 UAC**——安装入口始终在设置页。
+> 窗口默认 **1240×820**、可自由缩放。内容量会随硬件规模（核心数 / 卷数 / 网卡数）变化，
+> 当内容高于窗口时，**页面内部会出现纵向滚动条**——向下滚动即可看到下方全部内容。
 
-> 窗口默认 **1240×820**、可自由缩放。内容量会随硬件规模（核心数 / 卷数 / 网卡数）变化，  
-> 当内容高于窗口时，**页面内部会出现纵向滚动条**——向下滚动即可看到下方全部内容，  
-> 不再把网格行压扁，也不会让卡片内容互相叠压。
->
-> 布局约束（改动前务必理解）：`#app` 固定为 `height:100vh; overflow:hidden`，  
-> 滚动只发生在页面容器内部——**监控页 `.grid`**、**设置页 `.settings-page`**（两者都是  
-> `flex:1 1 auto; min-height:0; overflow-y:auto`）。切页只切这两个 `<main>` 的 `hidden` 类，  
-> 外壳（topbar / banner / tipbar / statusbar）保持不变。  
-> 关键是 `.grid` 必须声明 **`grid-auto-rows: max-content`**——否则 `.card{min-height:0}`  
-> 会让隐式行的 min-content 贡献为 0，配合默认 `align-content:stretch` 把行均摊拉伸到容器高度、  
-> 压扁卡片。删掉这一行滚动就会失效。
+## 下载与安装
 
-## 托盘与自启
+### 系统要求
 
-- 关闭主窗口默认**隐藏到托盘**，后台采样线程继续运行；托盘菜单选「退出」才真正结束
-- 左键单击托盘图标呼出面板，右键展开菜单
-- 托盘菜单提供：显示面板、暂停刷新、开机自启（勾选即写入注册表 Run 项）、退出
-- 设置页「常规」可以关闭「关闭时最小化到托盘」，让关闭按钮直接退出
+| 项 | 要求 |
+| -- | -- |
+| 操作系统 | **Windows 10 x64（build 17763 / 1809）及以上**（也是随包分发 PawnIO 驱动的前置条件） |
+| 架构 | 仅 x86_64 |
+| WebView2 | 需要运行时（Windows 11 一般已内置；安装包缺失时会引导安装） |
+| 权限 | 普通用户权限即可运行；CPU 温度 / 风扇等高级采集需管理员（按需授权一次） |
+
+### 安装
+
+1. 打开 [Releases](https://github.com/yyn0210/PulseDeck/releases) 页面；
+2. 下载最新版 NSIS 安装包（`PulseDeck_x.y.z_x64-setup.exe`）并双击安装；
+3. 启动后即可使用，**无需联网、无需管理员**。
+
+**关于高级采集（可选）**：CPU 温度最准的路径（读 MSR）与联想风扇转速需要内核驱动 PawnIO。
+本工具**绝不静默安装**——未安装时只是顶部多一条可关闭的提醒，安装入口在
+**设置 → 高级采集**，点按钮确认一次 UAC 即可（安装器随包分发，全程离线可用）。
+不装也能正常使用，温度会回退到 ACPI / PDH 通道。详见
+[CPU 温度与 PawnIO 提权桥](#cpu-温度与-pawnio-提权桥)。
+
+## 快速上手
+
+- **托盘与自启**：
+  - 关闭主窗口默认**隐藏到托盘**，后台采样线程继续运行；托盘菜单选「退出」才真正结束；
+  - 左键单击托盘图标呼出面板，右键展开菜单；
+  - 托盘菜单提供：显示面板、暂停刷新、开机自启（勾选即写入注册表 Run 项）、退出；
+  - 设置页「常规」可以关闭「关闭时最小化到托盘」，让关闭按钮直接退出。
+- **顶部提示条**：未安装 PawnIO 时，监控页顶部会出现一条可关闭的提醒（`#tipbar`），
+  点「去设置」直接跳到设置页「高级采集」；点「×」后由用户选 **「永久关闭」**（写入
+  `localStorage['wm.pawnioTipMuted']`，跨启动生效）或 **「仅本次」**（只挡本次运行），也可「取消」。
+  永久关闭后，设置页「高级采集」底部会留一条「重新开启」链接，避免变成单向门。
+  提示条只做提醒，**不在主页面弹 UAC**——安装入口始终在设置页。
+- **可调项**：
+  - 采样间隔：设置页「采样 → 刷新间隔」下拉框（500 ms / 1 s / 2 s / 5 s），同步调整后端采样线程间隔；
+  - 暂停/继续：停止前后端轮询，保留最后一帧数据（右上角按钮，托盘菜单里也能切）；
+  - 开机自启：设置页「常规」开关，或托盘菜单直接勾选。
 
 ## 桌面宠物
 
-设置页「桌面宠物」里开启后，桌面上会出现一只**置顶、无边框、透明、不进任务栏**的小宠物：  
+设置页「桌面宠物」里开启后，桌面上会出现一只**置顶、无边框、透明、不进任务栏**的小宠物：
 显示勾选的指标（CPU / 内存 / GPU 使用率），**形象随 CPU 温度换档**。
 
+<p align="center">
+  <img src="shots/ui_pet_final_v3.png" alt="桌面宠物：随温度换档的小狐狸" width="360">
+</p>
+
 - 形象是 **6 档 × 每档 8 帧**的机器人狐狸贴图（`src/assets/pet/*.png`，自带 alpha）：
-  `38 蓝 → 50 绿 → 63 黄绿 → 74 黄 → 84 橙 → 94 红`（与设置页色带同一组刻度）。  
-  档位内 8 帧循环播放（260ms/帧，约 3.8fps；整段播完约 2 秒）；**跨档位时整段换成新档位的 8 帧序列**（从第 0 帧起播）。  
+  `38 蓝 → 50 绿 → 63 黄绿 → 74 黄 → 84 橙 → 94 红`（与设置页色带同一组刻度）。
+  档位内 8 帧循环播放（260ms/帧，约 3.8fps；整段播完约 2 秒）；**跨档位时整段换成新档位的 8 帧序列**（从第 0 帧起播）。
   温度 `≥84℃` 的两档算「过热」：帧速加快到 200ms/帧（约 5fps），脚下温度文字变橙。
 - 档位按**就近**取刻度（如 68℃ → 63 档、88℃ → 84 档；正好居中时取较冷的一档）。
-- **温度读不到时**（多数机器要先装 PawnIO 驱动才有 CPU 温度）自动**退回按 CPU 占用选档**，  
+- **温度读不到时**（多数机器要先装 PawnIO 驱动才有 CPU 温度）自动**退回按 CPU 占用选档**，
   并在脚下标注「温度 -- · 按占用切换形象」、悬浮提示里说明原因——**不做无声降级**。
-- 整只宠物可拖动（`data-tauri-drag-region`），**双击呼出主面板**（主面板常驻托盘时很方便）。
+- 整只宠物可拖动，**双击呼出主面板**（主面板常驻托盘时很方便）。
 - 主面板「关闭时最小化到托盘」不影响宠物：**窗口由 Rust 侧持有**，与主窗口生命周期解耦。
 
-实现要点：
+## 数据来源与降级策略
 
-| 部分 | 位置与说明                                                                                                         |
-| -- | ------------------------------------------------------------------------------------------------------------- |
-| 配置 | `pet.json`（`%LOCALAPPDATA%\PulseDeck\`），启动时由 Rust 读回，**不依赖主窗口先起来**                                           |
-| 窗口 | `src-tauri/src/pet.rs`：`sync_window()` 按配置建 / 销毁；默认落在主显示器工作区右下角。窗口 **190×224**（高度跟着 15:16 的贴图走）        |
-| 读数 | 专用命令 `get_pet_metrics`（只回 CPU / 内存 / GPU / 温度四个数，不搬整份快照）                                                      |
-| 形象 | `src/assets/pet/t<档位>_<帧>.png`（6×8），由 `tools/copy_pet_frames.py` 从 `src/assets/img/pet/*.png` 抠底生成                |
-| 心跳 | 页面每秒 `pet_heartbeat`；设置页据此显示「运行中 / 未响应」                                                                       |
-| 命令 | `get_pet_config` / `set_pet_config` / `get_pet_metrics` / `pet_heartbeat` / `pet_status` / `show_main_window` |
-| 前端 | `pet.html` + `src/pet.js` + `src/pet.css`（独立入口，**vite 多入口**，与主面板共用构建）                                         |
-| 权限 | `capabilities/default.json` 的 `windows` 需含 `pet`（当前窗口标签只在 Rust 侧创建）                                           |
-
-### 宠物贴图（`tools/copy_pet_frames.py`）
-
-源图放在 `src/assets/img/pet/`，命名 `pet_<档位>_<帧号>.png`（1920×2048、**浅灰底、无 alpha**、
-单张约 800KB），**不参与打包**（前端只引用 `src/assets/pet/`，glob 模式是 `t*_*.png`）。
-
-```bash
-python tools/copy_pet_frames.py            # 生成/覆盖 src/assets/pet/*.png（依赖系统 Python 3.11 的 Pillow+numpy+scipy）
-python tools/check_pet_frames.py           # 自检：拿源图当基准，查出"白毛被抠破 / 背景没抠净"，有问题非零退出
-python tools/preview_pet_frames.py         # 人眼验收：出 shots/pet_frames_{dark,magenta}.png 两张联络表
-```
-
-导出规格：等比缩到 **320px 宽**的 **PNG（RGBA）**，当前 48 张合计约 8.7MB。
-
-**为什么用 PNG 而不是 WebP**：WebP 的 YUV 4:2:0 让 alpha 边缘和 RGB 错位，抠图边缘会发彩边
-（用户反馈过「颜色不太对」）。PNG 的 RGBA 四通道对齐，美术原色不串。
-
-**为什么不能"直接用原图"**：原图是**不透明**的（浅灰底约 RGB 242/241/243，还带一点蓝紫渐变），
-直接当贴图会带一个大方块。必须抠底。
-
-**抠底的关键难点 —— 白色毛和背景几乎同色**。实测小狐狸的口鼻 / 耳内 / 胸口白毛，与背景色的
-最大通道差只有 **0.01~0.07**；而背景本身是渐变（角落能偏出全局中位数 0.10）。所以：
-
-- **纯阈值必然失败**：任何「离背景色多远」的阈值都会把白毛和背景一起判成透明
-  —— 这正是曾经"把嘴抠没了"的原因（嘴周围的白色口鼻被抠成窟窿，只剩一条孤零零的深色嘴线）。
-- 不用形态学（`binary_opening/closing`）补救：嘴线只有 2~3px 宽，会被当噪声一起擦掉。
-
-现在的做法是 **连通性**（`process()`，四步）：
-
-1. **局部背景模型**：先用粗阈值（`COARSE_TOL=0.15`）从画面四边洪水填充拿到可信背景，再按
-   24 格粗网格取中位数、空缺格用最近邻补齐、双线性上采样，得到一张**跟得上渐变的"局部背景色"图**。
-2. **软 alpha**：按「离**局部**背景色的最大通道差」做 `BG_FULL=0.06 → BG_EDGE=0.10` 的线性羽化。
-3. **洪水填充定内外**：从画面四边出发，沿 `dist < FLOOD_GATE=0.14` 的像素 4 连通蔓延，
-   蔓延到的是「外面」（背景）；**蔓延不到的像素一律 alpha=1**。白色口鼻虽然颜色像背景，
-   但被橘色毛 / 深色线围死、从边缘蔓延不进去 → 保住。
-   因为 `FLOOD_GATE > BG_EDGE`，内外交界处 alpha 已经连续过渡到 1，**不会出现硬边**。
-4. RGB **全程保持美术原色**：不反预乘、不调色、不模糊、不做形态学。
-
-> 真要去掉残余的浅色底噪，调 `BG_FULL/BG_EDGE`（抬高压住底色、降低更容易透明）；
-> `FLOOD_GATE` 是"漏不漏"的闸门 —— 调低能堵住白色毛与背景之间的细通道（减少内部空洞），
-> 但不得低于 `BG_EDGE`，否则内硬外软会在边界上留一圈硬边。
-> 改完务必跑 `tools/check_pet_frames.py` 复检。
-
-> 换素材时若比例变了（不是 15:16），`pet.rs` 的 `WIN_H` 要跟着调，否则底部指标条会被裁掉。
-> 档位数字必须是 38/50/63/74/84/94 之一——前端用文件名里的数字当档位识别，多一档少一档都要同步
-> `src/pet.js` 的 `SCALE` 与设置页色带。帧数不设限（前端按 glob 结果自适应）。
-
-
-> 配置有**两道来源**：前端 `localStorage['wm.petConfig']`（用户刚改的，启动时优先推给后端）与  
-> 后端 `pet.json`（后端自己恢复窗口用）。提交后一律以 **`set_pet_config` 的返回值**回显，  
-> 因为后端会清洗配置（剔除非法指标、**至少保留一项**、透明度夹到 0.3~1.0）。
-
-**排查「宠物窗口在，但桌面上什么都没有」**：透明无边框窗口一旦 WebView 没渲染出来，  
-界面上就是「纯透明 = 什么都没有」，肉眼分不清是关了还是坏了。所以：
-
-1. 设置页「桌面宠物」里有 **宠物窗口** 状态行：`运行中` / `窗口在，但页面没有心跳` / `窗口未创建`；
-2. 需要落盘时用 `PULSEDECK_PET_TRACE=1` 启动应用，页面每次心跳会覆盖写  
-   `%LOCALAPPDATA%\PulseDeck\pet.trace`（形如 `beat ts_ms=… window_open=true`）——  
-   文件在长就是页面在跑，不在就是 WebView 没起来；
-3. 想用 DevTools 看页面本身，在 `tauri.conf.json` 的窗口配置里加  
-   `"additionalBrowserArgs": "--remote-debugging-port=9333"`，同时把  
-   `pet.rs` 的 `BROWSER_ARGS` 改成同一串（两个窗口参数必须一致，  
-   否则宠物窗口会以 `0x8007139F` 静默建不出来；`browser_args_match_conf` 单测会拦住漂移），  
-   然后重新出包。  
-   **注意 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` 环境变量在这里不起作用**——  
-   wry 总会自己设置这一项，WebView2 以 API 传入的值为准，环境变量会被忽略。
-
-#### ⚠️ 宠物窗口（第二个 WebView）的两个已知约束
-
-**① 附加参数必须两个窗口一致。** Windows 下同一份 WebView2 用户数据目录只能对应  
-「一组」`additionalBrowserArgs`。主窗口用 A、宠物窗口用 B（包括 B 是 wry 默认串），  
-建第二个 WebView 时 WebView2 直接返回 `HRESULT(0x8007139F)`(ERROR_INVALID_STATE)，  
-没有任何 UI 提示，桌面表现就是「宠物开关打开了但什么都不出现」。  
-当前**两个窗口都不带附加参数**（曾加过 anti-throttling 参数，后证实无用且已移除）；  
-`pet.rs` 的 `BROWSER_ARGS` 常量 + `browser_args_match_conf` 单测卡住这份一致性：  
-要加参数两边必须同时加同一份。
-
-**② 共享同一个 `ICoreWebView2Environment`（官方推荐做法）。**  
-`pet.rs` 的 `create_window` 会显式复用主窗口的环境  
-（`get_main_environment` 用 `with_webview` 从主窗口拿环境，  
-`WebviewWindowBuilder::with_environment` 传给宠物窗口），  
-两个 WebView 共用同一浏览器进程。**改创建逻辑时这一行不能删。**
-
-#### ⚠️ 从 AI 工具沙箱里启动本应用做验证，结果不可信（重大教训）
-
-2026-10-11 排查「宠物心跳只走一拍就冻结」耗时一整天，最终证实是**测试环境假象**：
-
-- 从 WorkBuddy 等 AI 工具的沙箱 shell 启动 `pulse-deck.exe`，沙箱会把  
-  `tsbx.dll` 注入整个进程树，随之进入 WebView2 的 **browser 进程**；
-- Chromium 完整性自检在启动 **~5.5s** 时触发 `FAIL_FAST (0x80000003)`，  
-  browser 进程崩溃、渲染器被整体带走——页面 JS 跑完第一拍就永远静止；
-- 窗口 HWND 还在（原生壳由 wry 持有）、`SendMessageTimeout` 灵敏、主进程存活，  
-  一切「看起来活着」，只有页面死了；
-- 崩溃证据在 `%LOCALAPPDATA%\com.jianluo.pulsedeck\EBWebView\Crashpad\reports\*.dmp`  
-  （minidump，`ptype=browser`、模块列表里能看到注入的 `tsbx.dll`）；  
-  **别家 Tauri 应用（Clash Verge）从同一沙箱启动也照样崩**——是机器级现象；
-- 用户双击启动（沙箱外）完全正常：主窗口、宠物都渲染，数据持续刷新。
-
-**推论：凡是从工具 shell 启动 GUI 应用验证「页面是否在跑」，一律不可信。**  
-心跳类回归（`tools/verify_pet_beat.py`、`tools/check_render.py`）必须从沙箱外运行，  
-或由用户手动启动后观察。排查时先看 Crashpad dump，比猜前端/CSS/节流快得多。
-
-预览（不改真机配置）：`npm run ui` 后打开 `http://localhost:1420/pet.html?mock=1`；  
-另有 `&hot=1`（过热档）、`&temp=74`（**固定温度**，用来逐档核对形象，取值 38/50/63/74/84/94）、  
-`&pawnio=missing`（温度不可用，退回按占用选档）、`&pawnio=missing&nogpu=1`（读不到 GPU 占用）。
-截图见 `shots/ui_pet_states.png`（6 档 + 温度不可用 + 浅色桌面）。
-
-> 截图/预览要注意：`vite build` 会清空 `dist/`，之后必须**重启** `python -m http.server --directory dist`
-> ——服务进程的工作目录会跟着旧的 `dist` 一起失效，继续用会一律 404。
-
-## 数据来源
-
-统一由 Rust 侧在**后台采样线程**每 N 毫秒刷新一次，前端只拉取最后一次快照，  
+统一由 Rust 侧在**后台采样线程**每 N 毫秒刷新一次，前端只拉取最后一次快照，
 避免多窗口/多次刷新导致重复采样。速率类指标一律用**实测采样间隔**（而非配置值）换算。
 
 | 指标                             | 接口                                                                                                                                                                                                                                                                                                                                            |
@@ -212,78 +168,83 @@ python tools/preview_pet_frames.py         # 人眼验收：出 shots/pet_frames
 | 电池降级读数                         | Win32 `GetSystemPowerStatus`                                                                                                                                                                                                                                                                                                                  |
 | 显卡名称（PDH 路径）                   | WMI `Win32_VideoController`                                                                                                                                                                                                                                                                                                                   |
 
-### 关于几个 Windows 上的「坑」
+### Windows 上的已知坑
 
-**电源功率 / 适配充电功率**：Windows 只公开「电池的充放电速率」（`SYSTEM_BATTERY_STATE::Rate`，单位 mW），  
+**电源功率 / 适配充电功率**：Windows 只公开「电池的充放电速率」（`SYSTEM_BATTERY_STATE::Rate`，单位 mW），
 **并不公开适配器的额定功率或输出功率**——没有任何公开接口能给出「充电器正在输出多少 W」。
 
-`Rate` 需按**有符号**解读（正=充电，负=放电），且 `0xFFFFFFFF` 是「固件未提供」的哨兵值  
+`Rate` 需按**有符号**解读（正=充电，负=放电），且 `0xFFFFFFFF` 是「固件未提供」的哨兵值
 ——按无符号解释会得到四百多万瓦的荒谬读数。
 
-另外这类机器很常见的一种真实状态是「**适配器已接入，但电池不充不放**」（满电后续充 / 电池养护模式），  
-此时 `Rate` 为 0 或极小值（本机实测长期为 `-90 mW` 的微放电）。早期版本只在「确实在充电」时赋值  
+另外这类机器很常见的一种真实状态是「**适配器已接入，但电池不充不放**」（满电后续充 / 电池养护模式），
+此时 `Rate` 为 0 或极小值（本机实测长期为 `-90 mW` 的微放电）。早期版本只在「确实在充电」时赋值
 充电功率，导致卡片一直显示 `--`。现在的处理：
 
 - 主数值取 **电池实时功率**：充电时用充入功率，未接入时用放电功率，**已接入但未充电时明确给 `0.0 W`**，不再留空
 - 副行补充 **CPU 封装功耗**（RAPL，来自 PDH `\Energy Meter(*)\Power`），这是一直存在的实时功耗读数
 - 说明文案按「充电中 / 已接入未充电 / 电池供电」分状态表述，并在括号里带上电池功率与 CPU 功耗
 
-**CPU 封装功耗**：`\Energy Meter(*)\Power` 的实例名形如 `rapl_package0_pkg`（整包）、  
-`rapl_package0_pp0`（核心）、`rapl_package0_dram`，单位是 **mW**；`_total` 实例恒为 0，不能直接取。  
+**CPU 封装功耗**：`\Energy Meter(*)\Power` 的实例名形如 `rapl_package0_pkg`（整包）、
+`rapl_package0_pp0`（核心）、`rapl_package0_dram`，单位是 **mW**；`_total` 实例恒为 0，不能直接取。
 部分老平台 / 虚拟机没有这个计数器，此时该读数显示 `--`，不影响其它指标。
 
-**CPU 温度**：Windows 没有统一的 hwmon 接口，温度只存在于 CPU 片内的 DTS 寄存器里，  
-**必须经内核驱动读 MSR**。本工具按优先级多源尝试：
+**网络重复计数**：Windows 上同一张网卡会同时出现真实接口和 NDIS 过滤驱动两个条目
+（本机 WLAN 与 WLAN-Huorong NDIS Filter 的累计流量完全相同），不去重会让汇总速率翻倍。
+采样时按 MAC / 累计流量相同识别并剔除重复项。
 
-① **PawnIO + Intel MSR**（最准，推荐）：借通用 IO 驱动 [PawnIO](https://pawnio.eu) 执行官方签名的  
-`IntelMSR` 模块，直接读 MSR —— `0x1A2` 取 TjMax、`0x1B1` 取封装 DTS、`0x19C` 逐核心取 DTS，  
-`温度 = TjMax − DTS`。读 MSR 需要管理员权限，故这一步放在**提权子进程**里做（详见下节）；  
-② **硬件监控软件的 WMI `Sensor` 表**：只对 **OpenHardwareMonitor** 或**旧版 LHM（≤ 0.9.4）**&#x6709;效 ——  
-LibreHardwareMonitor 自 **0.9.5 起已删除自带的 WMI 提供程序**，`root\LibreHardwareMonitor` 在新版上不存在；  
-③ **WMI `root\wmi:MSAcpi_ThermalZoneTemperature`**（ACPI 热区，厂商工具如联想 LegionZone 也拿它当通用兜底 ——  
-联想等机型的 BIOS 会暴露 CPU 热区，免装任何软件即可读到）；  
-④ **PDH `Thermal Zone Information(*)\Temperature`**（含有效性校验）。
+### CPU 温度与 PawnIO 提权桥
 
-本机（台式 / 虚拟机）实测既无 ACPI 热区实例、`Thermal Zone Information` 又恒定返回  
-`273`（对应 0°C，是无实现的假读数），因此代码会先换算成摄氏度、再用合理区间过滤掉这类值。  
-若以上通道都拿不到（例如非 Intel 平台且固件不暴露热区），界面显示 `--` 并给出具体原因 ——  
+Windows 没有统一的 hwmon 接口，CPU 温度只存在于片内 DTS 寄存器里，**必须经内核驱动读 MSR**。
+本工具按优先级多源尝试：
+
+1. **PawnIO + Intel MSR**（最准，推荐）：借通用 IO 驱动 [PawnIO](https://pawnio.eu) 执行官方签名的
+   `IntelMSR` 模块，直接读 MSR —— `0x1A2` 取 TjMax、`0x1B1` 取封装 DTS、`0x19C` 逐核心取 DTS，
+   `温度 = TjMax − DTS`。读 MSR 需要管理员权限，故这一步放在**提权子进程**里做（详见下文）；
+2. **硬件监控软件的 WMI `Sensor` 表**：只对 **OpenHardwareMonitor** 或**旧版 LHM（≤ 0.9.4）**有效 ——
+   LibreHardwareMonitor 自 **0.9.5 起已删除自带的 WMI 提供程序**，`root\LibreHardwareMonitor` 在新版上不存在；
+3. **WMI `root\wmi:MSAcpi_ThermalZoneTemperature`**（ACPI 热区，厂商工具如联想 LegionZone 也拿它当通用兜底 ——
+   联想等机型的 BIOS 会暴露 CPU 热区，免装任何软件即可读到）；
+4. **PDH `Thermal Zone Information(*)\Temperature`**（含有效性校验）。
+
+本机（台式 / 虚拟机）实测既无 ACPI 热区实例、`Thermal Zone Information` 又恒定返回
+`273`（对应 0°C，是无实现的假读数），因此代码会先换算成摄氏度、再用合理区间过滤掉这类值。
+若以上通道都拿不到（例如非 Intel 平台且固件不暴露热区），界面显示 `--` 并给出具体原因 ——
 `%LOCALAPPDATA%\PulseDeck\pawnio.log` 里会有提权桥接进程留下的失败明细。
 
-> 逆向笔记：联想 LegionZone 取 CPU 温度的主路径是私有 WMI 提供程序 `root\wmi:LZWmiX80`  
-> （方法 `Query_CAPABILITY_DATA_00/01` 返回 `LENOVO_CAPABILITY_DATA_xx` 二进制 blob，内嵌  
-> `CPU DTS Sensor Temperature` 片上数字温度传感器读数），其通用兜底才是上面的 `MSAcpi_ThermalZoneTemperature`。  
+> **只内置了 Intel 模块，AMD 平台暂不支持 MSR 直读**（会给出明确提示并回退 ACPI / PDH）。
+
+> 逆向笔记：联想 LegionZone 取 CPU 温度的主路径是私有 WMI 提供程序 `root\wmi:LZWmiX80`
+> （方法 `Query_CAPABILITY_DATA_00/01` 返回 `LENOVO_CAPABILITY_DATA_xx` 二进制 blob，内嵌
+> `CPU DTS Sensor Temperature` 片上数字温度传感器读数），其通用兜底才是上面的 `MSAcpi_ThermalZoneTemperature`。
 > `LZWmiX80` 的 blob 格式未公开，无法盲接；本工具走的是更通用的 MSR 直读路径。
+> 完整分析见 `docs/LegionZone采集机制分析.md`。
 
-### PawnIO + Intel MSR（温度源 ①）
-
-PawnIO 是一个**通用**内核驱动：它本身不含硬件逻辑，只负责执行**已签名的模块字节码**，  
-因此不需要用户安装任何硬件监控软件。本工具把官方发布的 `IntelMSR.bin`  
-（来源 [namazso/PawnIO.Modules](https://github.com/namazso/PawnIO.Modules) v0.1.6，LGPL-2.1，  
+**PawnIO 是什么**：一个**通用**内核驱动：它本身不含硬件逻辑，只负责执行**已签名的模块字节码**，
+因此不需要用户安装任何硬件监控软件。本工具把官方发布的 `IntelMSR.bin`
+（来源 [namazso/PawnIO.Modules](https://github.com/namazso/PawnIO.Modules) v0.1.6，LGPL-2.1，
 见 `src-tauri/resources/pawnio/NOTICE.md`）随安装包分发。
 
 **为什么要拆成两个进程**：读 MSR 需要管理员权限，而主程序是普通权限运行的。所以：
 
-1. 主程序启动时先探测 PawnIO 设备（`CreateFileW` 的失败码即可区分「没装」/「装了但没权限」）；  
-   **未安装就直接不拉**，交给界面引导（见下节）；已安装则检查  
-   `%LOCALAPPDATA%\PulseDeck\pawnio.json`，**没有新鲜读数**才拉起桥接进程，  
+1. 主程序启动时先探测 PawnIO 设备（`CreateFileW` 的失败码即可区分「没装」/「装了但没权限」）；
+   **未安装就直接不拉**，交给界面引导（见下节）；已安装则检查
+   `%LOCALAPPDATA%\PulseDeck\pawnio.json`，**没有新鲜读数**才拉起桥接进程，
    且**一个会话只尝试一次**，不会反复弹 UAC；
-2. 桥接进程是**本 exe 自己**（命令行带 `--pawnio-bridge --module <path> --out <path> --parent-pid <pid>`），  
+2. 桥接进程是**本 exe 自己**（命令行带 `--pawnio-bridge --module <path> --out <path> --parent-pid <pid>`），
    用 `ShellExecuteExW` 的 `runas` 动词 + 隐藏窗口启动 —— 首次运行会弹**一次 UAC**；
-3. 它打开 `\\?\GLOBALROOT\Device\PawnIO`、载入模块、每秒读一次温度，把结果**原子写入**（临时文件 + 改名）  
+3. 它打开 `\\?\GLOBALROOT\Device\PawnIO`、载入模块、每秒读一次温度，把结果**原子写入**（临时文件 + 改名）
    那个 JSON；主进程只是读文件，因此完全不需要跨权限 IPC；
-4. 它**启动时打开一次父进程句柄并一直持有**，之后每秒用 `WaitForSingleObject` 等待它——  
-   父进程一退出（进程对象被置为有信号态）就自行收尾 —— 不需要（也不该）在这里做跨权限  
+4. 它**启动时打开一次父进程句柄并一直持有**，之后每秒用 `WaitForSingleObject` 等待它——
+   父进程一退出（进程对象被置为有信号态）就自行收尾 —— 不需要（也不该）在这里做跨权限
    `TerminateProcess`，那在普通权限下大概率会失败。
 
-> ⚠️ 判据**必须**是句柄等待，**不能**是「`OpenProcess` 打不开就算父进程退出」：Windows 上  
-> 进程退出后只要有别的句柄还引用它的进程对象（WebView2 之类很常见），`OpenProcess(父PID)`  
-> 会继续成功，子进程就会永远以为父进程活着、应用关了它还赖在后台（2026-10-10 修的  
-> 「残留进程」正是此因）。详见 `msr_bridge.rs` 的 `ParentWatch` 与回归测试  
+> ⚠️ 判据**必须**是句柄等待，**不能**是「`OpenProcess` 打不开就算父进程退出」：Windows 上
+> 进程退出后只要有别的句柄还引用它的进程对象（WebView2 之类很常见），`OpenProcess(父PID)`
+> 会继续成功，子进程就会永远以为父进程活着、应用关了它还赖在后台（2026-10-10 修的
+> 「残留进程」正是此因）。详见 `msr_bridge.rs` 的 `ParentWatch` 与回归测试
 > `parent_watch_notices_exit_even_when_object_survives`。
 
-> 目前只内置了 Intel 模块，**AMD 平台暂不支持 MSR 直读**（会给出明确提示并回退 ACPI/PDH）。
-
-#### PawnIO 没装怎么办：随包分发 + 一键安装引导
+### PawnIO 未安装时的一键引导
 
 装 PawnIO 需要管理员权限（它是内核驱动），所以本工具**绝不静默安装**，而是分两种情况：
 
@@ -293,26 +254,32 @@ PawnIO 是一个**通用**内核驱动：它本身不含硬件逻辑，只负责
 | 用户点了按钮        | 拉起提权子进程并带 `--install-if-missing`（= 已获授权）；子进程**已经是管理员**，于是直接跑随包安装器 `-install -silent`，装完接着读温度 —— **全程只弹一次 UAC** |
 | 已安装           | 正常拉起子进程读 MSR                                                                                                   |
 
-安装器**随安装包原样分发**（源码里就是官方 2.2.0 的 `PawnIO_setup.exe`，未做任何修改），  
+<p align="center">
+  <img src="shots/pawnio-install-guide.png" alt="设置页高级采集：PawnIO 安装引导" width="720">
+</p>
+
+安装器**随安装包原样分发**（源码里就是官方 2.2.0 的 `PawnIO_setup.exe`，未做任何修改），
 所以目标机器不需要联网、也不需要用户自己去下载。命令行与退出码：
 
 ```text
 Usage: PawnIOSetup.exe [-install] [-uninstall] [-unrestricted] [-debuginfo] [-silent]
 ```
 
-`-install -silent` 静默安装；退出码 `0` = 成功，`3010` = 成功但需重启，其他为 DOS 错误码。  
+`-install -silent` 静默安装；退出码 `0` = 成功，`3010` = 成功但需重启，其他为 DOS 错误码。
 用户**不装也能正常使用**本工具，只是温度会回退到 ACPI / PDH。
 
-> **再分发条款**：安装器二进制是专有的「All rights reserved. This installer can be  
-> redistributed **unmodified**.」——所以它必须**原样**分发，不要改字节 / 换图标 / 重新签名  
-> （它带官方 Authenticode 签名，篡改会破坏签名）。先例：LibreHardwareMonitor 内嵌它、  
-> Chocolatey 官方 `pawnio` 包分发它、NWinfo 也分发它。详见  
+> **再分发条款**：安装器二进制是专有的「All rights reserved. This installer can be
+> redistributed **unmodified**.」——所以它必须**原样**分发，不要改字节 / 换图标 / 重新签名
+> （它带官方 Authenticode 签名，篡改会破坏签名）。先例：LibreHardwareMonitor 内嵌它、
+> Chocolatey 官方 `pawnio` 包分发它、NWinfo 也分发它。详见
 > `src-tauri/resources/pawnio/NOTICE.md`。
 >
-> 前置条件：**Windows 10 x64 1809（build 17763）及以上**；若系统已装更旧的 PawnIO，  
+> 前置条件：**Windows 10 x64 1809（build 17763）及以上**；若系统已装更旧的 PawnIO，
 > 安装器会拒绝并要求先卸载——本工具不会强行覆盖，只把原始退出码回传给界面。
 
-**风扇转速**：这是个比温度更封闭的指标，**Windows 没有任何公开的用户态接口**。  
+### 风扇转速
+
+这是个比温度更封闭的指标，**Windows 没有任何公开的用户态接口**。
 本工具的策略是「**能读到就报、读不到就明确说读不到**」，绝不拿占空比冒充转速：
 
 | 通道                                                               | 覆盖情况                                          | 单位          |
@@ -322,88 +289,58 @@ Usage: PawnIOSetup.exe [-install] [-uninstall] [-unrestricted] [-debuginfo] [-si
 | LHM / OHM 的 WMI `Sensor(SensorType='Fan')`                       | 需装 OpenHardwareMonitor 或旧版 LHM（≤ 0.9.4）       | **RPM（可信）** |
 | ACPI `Win32_Fan.DesiredSpeed`                                    | 类存在但**绝大多数机器该字段为空**；有值也不保证是 RPM               | 相对速度        |
 
-
-前端展示口径：**优先真实 RPM，其次占空比 `%`，两者都没有才显示 `--`**，  
+前端展示口径：**优先真实 RPM，其次占空比 `%`，两者都没有才显示 `--`**，
 并在设置页「高级采集」下方给出具体原因（CPU 与 GPU 的成因不同，分开说明）。
 
-**联想机型**：CPU 风扇可通过厂商私有的 **ACPI-WMI 通道**读取（联想官方 LegionZone 用的就是它），  
-但实测**需要管理员权限**。本工具把它接进与 CPU 温度同一个**提权子进程**（一次 UAC 同时搞定两者），  
-所以联想机型上温度与风扇是「一荣俱荣」的。检测到联想设备且风扇不可用时，  
+**联想机型**：CPU 风扇可通过厂商私有的 **ACPI-WMI 通道**读取（联想官方 LegionZone 用的就是它），
+但实测**需要管理员权限**。本工具把它接进与 CPU 温度同一个**提权子进程**（一次 UAC 同时搞定两者），
+所以联想机型上温度与风扇是「一荣俱荣」的。检测到联想设备且风扇不可用时，
 界面会在提示区显示「**启用**」按钮，点击并确认一次 UAC 即可。
 
-> **刷新节奏**：风扇读数与 CPU 温度**同一个来源、同一个节拍**——桥接子进程 **1Hz** 写出，  
-> 主进程**每拍直接读**（本地小文件，微秒级），界面跟着采样间隔走。  
-> 主进程侧**没有任何时间窗缓存**：桥接每秒给一次，界面就每秒更新一次。  
-> （采样间隔选 500 ms 时，风扇受桥接 1Hz 的产出速率限制，会呈现"两次一更新"，  
-> 这是数据源的真实节拍，不是丢帧。）  
+> **刷新节奏**：风扇读数与 CPU 温度**同一个来源、同一个节拍**——桥接子进程 **1Hz** 写出，
+> 主进程**每拍直接读**（本地小文件，微秒级），界面跟着采样间隔走。
+> 主进程侧**没有任何时间窗缓存**：桥接每秒给一次，界面就每秒更新一次。
+> （采样间隔选 500 ms 时，风扇受桥接 1Hz 的产出速率限制，会呈现"两次一更新"，
+> 这是数据源的真实节拍，不是丢帧。）
 > 提权后本机实测 CPU 风扇 ≈ 2800 RPM、GPU 风扇 ≈ 2785 RPM（相邻两拍通常有 3~10 RPM 抖动）。
 
-> 本机（RTX 3060 Laptop + 12th Gen Intel）实测：`nvml.fan_speed(0)` 返回 `Err(InvalidArg)`、  
-> `Win32_Fan.DesiredSpeed` 为空、未装 OHM/LHM → 通用通道全读不到；  
-> 但**联想通道提权后可读到 CPU 风扇 ≈ 3007 RPM、GPU 风扇 ≈ 2978 RPM**。  
+> 本机（RTX 3060 Laptop + 12th Gen Intel）实测：`nvml.fan_speed(0)` 返回 `Err(InvalidArg)`、
+> `Win32_Fan.DesiredSpeed` 为空、未装 OHM/LHM → 通用通道全读不到；
+> 但**联想通道提权后可读到 CPU 风扇 ≈ 3007 RPM、GPU 风扇 ≈ 2978 RPM**。
 > 用 `cargo test -p pulse-deck diag::probe_fan -- --nocapture` 可以复现通用通道的判断过程。
 >
-> CPU 侧还有个更深的现状：CPU 风扇在非联想机型上挂在主板 Super I/O / EC 上，即便是本工具已有的  
-> PawnIO 通道也帮不上忙 —— 实测 `IntelMSR.bin` 只导出 `ioctl_read_msr` / `cpuid` / `msr_read` /  
-> `get_arch`，**不含任何 EC 读取函数**。要拿真实 RPM 只能另配 Super I/O 模块（机型强相关），暂不引入。  
-> 详见 `docs/LegionZone采集机制分析.md`。
+> CPU 侧还有个更深的现状：CPU 风扇在非联想机型上挂在主板 Super I/O / EC 上，即便是本工具已有的
+> PawnIO 通道也帮不上忙 —— 实测 `IntelMSR.bin` 只导出 `ioctl_read_msr` / `cpuid` / `msr_read` /
+> `get_arch`，**不含任何 EC 读取函数**。要拿真实 RPM 只能另配 Super I/O 模块（机型强相关），暂不引入。
+> 详见 `docs/风扇转速方案评估.md` 与 `docs/LegionZone采集机制分析.md`。
 
-**网络重复计数**：Windows 上同一张网卡会同时出现真实接口和 NDIS 过滤驱动两个条目  
-（本机 WLAN 与 WLAN-Huorong NDIS Filter 的累计流量完全相同），不去重会让汇总速率翻倍。  
-采样时按 MAC / 累计流量相同识别并剔除重复项。
+## 从源码构建
 
-## 目录结构
+### 环境要求
 
-```
-├─ index.html                 前端入口
-├─ vite.config.js
-├─ package.json
-├─ src/                       前端（Vite）
-│  ├─ main.js                 轮询 + 渲染
-│  ├─ style.css
-│  └─ modules/{format.js,charts.js}
-├─ src-tauri/
-│  ├─ tauri.conf.json
-│  ├─ capabilities/default.json
-│  ├─ resources/pawnio/       IntelMSR.bin（温度模块）+ PawnIO_setup.exe（官方安装器，原样分发）
-│  │                          来源 / 许可 / 再分发条款见同目录 NOTICE.md
-│  └─ src/
-│     ├─ main.rs              二进制入口
-│     ├─ lib.rs               Tauri 装配 + 托盘 + 采样线程 + 命令
-│     ├─ sampler.rs           采样编排（CPU/内存/磁盘/网络/进程/GPU/温度）
-│     ├─ gpu.rs               GPU：NVML 优先，PDH 兜底
-│     ├─ fan.rs               风扇转速：厂商私有(联想) → NVML → LHM/OHM WMI → ACPI，读不到就诚实降级
-│     ├─ vendor.rs            厂商私有通道的调度与结果挑选（读取桥接产出的 JSON）
-│     ├─ thermal.rs           CPU/GPU 温度 + CPU 封装功耗：多源探测 + 有效性过滤
-│     ├─ pdh.rs               PDH 性能计数器封装
-│     ├─ wmi.rs               WMI(COM) 查询封装（ACPI 热区、显卡名、OHM/旧版 LHM 传感器、联想 ACPI-WMI 方法调用）
-│     ├─ pawnio.rs            PawnIO 驱动直连：载入模块、读 MSR、解 DTS 温度
-│     ├─ pawnio_setup.rs      PawnIO 探测（设备能否打开）+ 静默安装随包安装器
-│     ├─ msr_bridge.rs        提权子进程：读 MSR + 联想风扇，写 pawnio.json（主进程只读该文件）
-│     ├─ battery.rs           电池读数整理
-│     ├─ win32.rs             Win32 薄封装（电源、内存提交量）
-│     └─ model.rs             与前端交换的数据模型
-├─ tools/make_icons.py        图标生成脚本（Pillow）
-└─ tools/verify_bridge_exit.py 验收脚本：桥接进程是否跟着父进程一起收尾（见「调试与自测」）
-```
+- [Rust](https://rustup.rs)（stable，`x86_64-pc-windows-msvc` 目标）
+- [Node.js](https://nodejs.org) ≥ 20.19（Vite 7 的要求）与 npm
+- VS2022 的 MSVC 工具链（cl.exe / link.exe，Rust msvc 目标依赖）
+- WebView2 运行时（开发机一般已有）
+- Python 3.11 + Pillow / numpy / scipy —— 仅**改宠物贴图**时需要（见[宠物贴图管线](#宠物贴图管线)）
 
-## 运行
+### 构建命令
 
 ```bash
+git clone https://github.com/yyn0210/PulseDeck.git
+cd PulseDeck
 npm install
-npm run dev        # 开发模式（Vite + Tauri）
-npm run build      # 产出安装包 / exe（src-tauri/target/release）
-npm run build:exe  # 只产出 exe，跳过 NSIS 打包
+npm run dev        # 开发模式（Vite dev server :1420 + Tauri 窗口；期间保持 Vite 存活）
+npm run build      # 完整打包：前端 + exe + NSIS 安装包
+npm run build:exe  # 只出 exe（src-tauri/target/release/pulse-deck.exe），跳过 NSIS
 ```
 
-Release 产物：`src-tauri/target/release/pulse-deck.exe`，  
+Release 产物：`src-tauri/target/release/pulse-deck.exe`，
 NSIS 安装包：`src-tauri/target/release/bundle/nsis/*.exe`。
-
-> 本项目在 `x86_64-pc-windows-msvc` 下编译验证通过，需要 VS2022 MSVC 工具链与 WebView2 运行时。
 
 ### ⚠️ 不要直接 `cargo build --release`
 
-`src-tauri/Cargo.toml` 里 `custom-protocol = ["tauri/custom-protocol"]` 是一个**非默认** feature，  
+`src-tauri/Cargo.toml` 里 `custom-protocol = ["tauri/custom-protocol"]` 是一个**非默认** feature，
 它决定 Tauri 加载「内置前端资源」还是「devUrl 上的 Vite 开发服务器」：
 
 ```rust
@@ -412,15 +349,9 @@ let dev = !custom_protocol;        // 没启用 custom-protocol → 判定为 de
 println!("cargo:dev={dev}");
 ```
 
-`dev=true` 时窗口会去请求 `http://localhost:1420`，双击 exe 就会看到  
-`localhost 拒绝连接（ERR_CONNECTION_REFUSED）`——**不是页面坏了，是构建姿势不对**。  
-只有 `tauri build`（CLI）会自动追加该 feature，所以务必走 npm 脚本：
-
-```bash
-npm run build        # 完整打包：前端 + exe + NSIS 安装包
-npm run build:exe    # 只出可运行的 exe，跳过安装包（无需 NSIS）
-```
-
+`dev=true` 时窗口会去请求 `http://localhost:1420`，双击 exe 就会看到
+`localhost 拒绝连接（ERR_CONNECTION_REFUSED）`——**不是页面坏了，是构建姿势不对**。
+只有 `tauri build`（CLI）会自动追加该 feature，所以务必走 npm 脚本。
 `npm run dev` 期间请保持 Vite 进程存活，否则窗口刷新同样会报连接被拒绝。
 
 ## 调试与自测
@@ -446,9 +377,9 @@ WMI 逐步 HRESULT 日志：`WB_WMI_DIAG=1 cargo test -p pulse-deck diag::wmi --
 
 ### 桥接进程会不会留成孤儿
 
-`msr_bridge.rs` 的存活判据有两条用例锁着（`cargo test -p pulse-deck msr_bridge::tests`）。  
-其中 `parent_watch_notices_exit_even_when_object_survives` 复刻了「进程已退出但进程对象还没被  
-回收」的场景 —— 旧判据（`OpenProcess` 打不开才算退出）在这个场景下恒为「还活着」，  
+`msr_bridge.rs` 的存活判据有两条用例锁着（`cargo test -p pulse-deck msr_bridge::tests`）。
+其中 `parent_watch_notices_exit_even_when_object_survives` 复刻了「进程已退出但进程对象还没被
+回收」的场景 —— 旧判据（`OpenProcess` 打不开才算退出）在这个场景下恒为「还活着」，
 就是 2026-10-10 那个「应用关了还有残留进程」的根因，**别把它改回去**。
 
 要看真实二进制（而不是测试里造的场面）的表现，跑验收脚本 —— 不弹 UAC、不开窗口：
@@ -458,18 +389,266 @@ npm run build             # 先出包，脚本读 src-tauri/target/release/pulse
 python tools/verify_bridge_exit.py
 ```
 
-它会拉起一个自己控制的假父进程 + 一个 `--pawnio-bridge` 实例，确认「父进程活着→桥接保持  
+它会拉起一个自己控制的假父进程 + 一个 `--pawnio-bridge` 实例，确认「父进程活着→桥接保持
 存活」「父进程结束→桥接 1 拍内自行退出」，并顺带打印旧判据在同一时刻的错误结论作对照。
 
-## 可调项
+## 开发深入笔记
 
-- 采样间隔：设置页「采样 → 刷新间隔」下拉框（500 ms / 1 s / 2 s / 5 s），同步调整后端采样线程间隔
-- 暂停/继续：停止前后端轮询，保留最后一帧数据（右上角按钮，托盘菜单里也能切）
-- 开机自启：设置页「常规」开关，或托盘菜单直接勾选
-- `src-tauri/src/sampler.rs` 中的 `TOP_N` 控制进程榜长度
+> 以下是为贡献者保留的深入说明（改敏感区域前**必读**）。快速索引见 `AGENTS.md`。
 
-## 可扩展方向
+### 布局约束
+
+`#app` 固定为 `height:100vh; overflow:hidden`，
+滚动只发生在页面容器内部——**监控页 `.grid`**、**设置页 `.settings-page`**（两者都是
+`flex:1 1 auto; min-height:0; overflow-y:auto`）。切页只切这两个 `<main>` 的 `hidden` 类，
+外壳（topbar / banner / tipbar / statusbar）保持不变。
+关键是 `.grid` 必须声明 **`grid-auto-rows: max-content`**——否则 `.card{min-height:0}`
+会让隐式行的 min-content 贡献为 0，配合默认 `align-content:stretch` 把行均摊拉伸到容器高度、
+压扁卡片。删掉这一行滚动就会失效。
+
+### 宠物窗口是第二个 WebView
+
+**① 附加参数必须两个窗口一致。** Windows 下同一份 WebView2 用户数据目录只能对应
+「一组」`additionalBrowserArgs`。主窗口用 A、宠物窗口用 B（包括 B 是 wry 默认串），
+建第二个 WebView 时 WebView2 直接返回 `HRESULT(0x8007139F)`(ERROR_INVALID_STATE)，
+没有任何 UI 提示，桌面表现就是「宠物开关打开了但什么都不出现」。
+当前**两个窗口都不带附加参数**（曾加过 anti-throttling 参数，后证实无用且已移除）；
+`pet.rs` 的 `BROWSER_ARGS` 常量 + `browser_args_match_conf` 单测卡住这份一致性：
+要加参数两边必须同时加同一份。
+
+**② 共享同一个 `ICoreWebView2Environment`（官方推荐做法）。**
+`pet.rs` 的 `create_window` 会显式复用主窗口的环境
+（`get_main_environment` 用 `with_webview` 从主窗口拿环境，
+`WebviewWindowBuilder::with_environment` 传给宠物窗口），
+两个 WebView 共用同一浏览器进程。**改创建逻辑时这一行不能删。**
+
+宠物窗口的生命周期由 Rust 侧持有（`pet.rs` 的 `sync_window()`），与主窗口解耦
+（主窗口关到托盘不影响宠物）。实现要点：
+
+| 部分 | 位置与说明                                                                                                         |
+| -- | ------------------------------------------------------------------------------------------------------------- |
+| 配置 | `pet.json`（`%LOCALAPPDATA%\PulseDeck\`），启动时由 Rust 读回，**不依赖主窗口先起来**                                           |
+| 窗口 | `src-tauri/src/pet.rs`：`sync_window()` 按配置建 / 销毁；默认落在主显示器工作区右下角。窗口 **190×224**（高度跟着 15:16 的贴图走）        |
+| 读数 | 专用命令 `get_pet_metrics`（只回 CPU / 内存 / GPU / 温度四个数，不搬整份快照）                                                      |
+| 形象 | `src/assets/pet/t<档位>_<帧>.png`（6×8），由 `tools/copy_pet_frames.py` 从 `src/assets/img/pet/*.png` 抠底生成                |
+| 心跳 | 页面每秒 `pet_heartbeat`；设置页据此显示「运行中 / 未响应」                                                                       |
+| 命令 | `get_pet_config` / `set_pet_config` / `get_pet_metrics` / `pet_heartbeat` / `pet_status` / `show_main_window` |
+| 前端 | `pet.html` + `src/pet.js` + `src/pet.css`（独立入口，**vite 多入口**，与主面板共用构建）                                         |
+| 权限 | `capabilities/default.json` 的 `windows` 需含 `pet`（当前窗口标签只在 Rust 侧创建）                                           |
+
+### 宠物贴图管线
+
+> **素材来源**：形象由**豆包（字节跳动）AI 图像生成**制作（2026-10，本项目专用素材；
+> 依豆包用户协议，平台不主张对生成内容的所有权、权利归用户），抠底 / 缩放等加工均由
+> 本仓库脚本完成。来源与素材声明同步记录在 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
+
+`src/assets/img/pet/` 是**不参与打包**的源图（浅灰底、无 alpha，1920×2048，单张约 800KB，
+命名 `pet_<档位>_<帧号>.png`）；`tools/copy_pet_frames.py` 抠底生成
+`src/assets/pet/t<档位>_<帧>.png`（等比缩到 320px 宽的 RGBA PNG，48 张合计约 8.7MB，
+前端 glob 模式 `t*_*.png`）：
+
+```bash
+python tools/copy_pet_frames.py            # 生成/覆盖 src/assets/pet/*.png（依赖系统 Python 3.11 的 Pillow+numpy+scipy）
+python tools/check_pet_frames.py           # 自检：拿源图当基准，查出"白毛被抠破 / 背景没抠净"，有问题非零退出
+python tools/preview_pet_frames.py         # 人眼验收：出 shots/pet_frames_{dark,magenta}.png 两张联络表
+```
+
+改抠图参数后必须跑后两个脚本；换素材比例变了（非 15:16）要同步 `pet.rs` 的 `WIN_H`；
+档位必须是 38/50/63/74/84/94 之一且增减要同步 `src/pet.js` 的 `SCALE` 与设置页色带
+（前端按文件名数字识别档位；帧数不设限，按 glob 结果自适应）。
+
+**为什么用 PNG 而不是 WebP**：WebP 的 YUV 4:2:0 让 alpha 边缘和 RGB 错位，抠图边缘会发彩边
+（用户反馈过「颜色不太对」）。PNG 的 RGBA 四通道对齐，美术原色不串。
+
+**为什么不能「直接用原图」**：原图是**不透明**的（浅灰底约 RGB 242/241/243，还带一点蓝紫渐变），
+直接当贴图会带一个大方块。必须抠底。
+
+**抠底的关键难点 —— 白色毛和背景几乎同色**。实测小狐狸的口鼻 / 耳内 / 胸口白毛，与背景色的
+最大通道差只有 **0.01~0.07**；而背景本身是渐变（角落能偏出全局中位数 0.10）。所以：
+
+- **纯阈值必然失败**：任何「离背景色多远」的阈值都会把白毛和背景一起判成透明
+  —— 这正是曾经"把嘴抠没了"的原因（嘴周围的白色口鼻被抠成窟窿，只剩一条孤零零的深色嘴线）。
+- 不用形态学（`binary_opening/closing`）补救：嘴线只有 2~3px 宽，会被当噪声一起擦掉。
+
+现在的做法是 **连通性**（`process()`，四步）：
+
+1. **局部背景模型**：先用粗阈值（`COARSE_TOL=0.15`）从画面四边洪水填充拿到可信背景，再按
+   24 格粗网格取中位数、空缺格用最近邻补齐、双线性上采样，得到一张**跟得上渐变的"局部背景色"图**。
+2. **软 alpha**：按「离**局部**背景色的最大通道差」做 `BG_FULL=0.06 → BG_EDGE=0.10` 的线性羽化。
+3. **洪水填充定内外**：从画面四边出发，沿 `dist < FLOOD_GATE=0.14` 的像素 4 连通蔓延，
+   蔓延到的是「外面」（背景）；**蔓延不到的像素一律 alpha=1**。白色口鼻虽然颜色像背景，
+   但被橘色毛 / 深色线围死、从边缘蔓延不进去 → 保住。
+   因为 `FLOOD_GATE > BG_EDGE`，内外交界处 alpha 已经连续过渡到 1，**不会出现硬边**。
+4. RGB **全程保持美术原色**：不反预乘、不调色、不模糊、不做形态学。
+
+> 真要去掉残余的浅色底噪，调 `BG_FULL/BG_EDGE`（抬高压住底色、降低更容易透明）；
+> `FLOOD_GATE` 是"漏不漏"的闸门 —— 调低能堵住白色毛与背景之间的细通道（减少内部空洞），
+> 但不得低于 `BG_EDGE`，否则内硬外软会在边界上留一圈硬边。
+> 改完务必跑 `tools/check_pet_frames.py` 复检。
+
+### 宠物配置双写与排查
+
+配置有**两道来源**：前端 `localStorage['wm.petConfig']`（用户刚改的，启动时优先推给后端）与
+后端 `pet.json`（后端自己恢复窗口用）。提交后一律以 **`set_pet_config` 的返回值**回显，
+因为后端会清洗配置（剔除非法指标、**至少保留一项**、透明度夹到 0.3~1.0）。
+
+**排查「宠物窗口在，但桌面上什么都没有」**：透明无边框窗口一旦 WebView 没渲染出来，
+界面上就是「纯透明 = 什么都没有」，肉眼分不清是关了还是坏了。所以：
+
+1. 设置页「桌面宠物」里有 **宠物窗口** 状态行：`运行中` / `窗口在，但页面没有心跳` / `窗口未创建`；
+2. 需要落盘时用 `PULSEDECK_PET_TRACE=1` 启动应用，页面每次心跳会覆盖写
+   `%LOCALAPPDATA%\PulseDeck\pet.trace`（形如 `beat ts_ms=… window_open=true`）——
+   文件在长就是页面在跑，不在就是 WebView 没起来；
+3. 想用 DevTools 看页面本身，在 `tauri.conf.json` 的窗口配置里加
+   `"additionalBrowserArgs": "--remote-debugging-port=9333"`，同时把
+   `pet.rs` 的 `BROWSER_ARGS` 改成同一串（两个窗口参数必须一致，
+   否则宠物窗口会以 `0x8007139F` 静默建不出来；`browser_args_match_conf` 单测会拦住漂移），
+   然后重新出包。
+   **注意 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` 环境变量在这里不起作用**——
+   wry 总会自己设置这一项，WebView2 以 API 传入的值为准，环境变量会被忽略。
+
+### 前端预览与 Mock
+
+宠物页面可以脱离真机配置直接预览（`npm run ui` 后打开）：
+
+```text
+http://localhost:1420/pet.html?mock=1                      # 常规档
+http://localhost:1420/pet.html?mock=1&hot=1                # 过热档
+http://localhost:1420/pet.html?mock=1&temp=74              # 固定温度逐档核对（取值 38/50/63/74/84/94）
+http://localhost:1420/pet.html?mock=1&pawnio=missing       # 温度不可用，退回按占用选档
+http://localhost:1420/pet.html?mock=1&pawnio=missing&nogpu=1  # 连 GPU 占用也读不到
+```
+
+> 截图/预览要注意：`vite build` 会清空 `dist/`，之后必须**重启** `python -m http.server --directory dist`
+> ——服务进程的工作目录会跟着旧的 `dist` 一起失效，继续用会一律 404。
+
+### 在沙箱里启动 GUI 做验证不可信
+
+2026-10-11 排查「宠物心跳只走一拍就冻结」耗时一整天，最终证实是**测试环境假象**：
+
+- 从 WorkBuddy 等 AI 工具的沙箱 shell 启动 `pulse-deck.exe`，沙箱会把
+  `tsbx.dll` 注入整个进程树，随之进入 WebView2 的 **browser 进程**；
+- Chromium 完整性自检在启动 **~5.5s** 时触发 `FAIL_FAST (0x80000003)`，
+  browser 进程崩溃、渲染器被整体带走——页面 JS 跑完第一拍就永远静止；
+- 窗口 HWND 还在（原生壳由 wry 持有）、`SendMessageTimeout` 灵敏、主进程存活，
+  一切「看起来活着」，只有页面死了；
+- 崩溃证据在 `%LOCALAPPDATA%\com.jianluo.pulsedeck\EBWebView\Crashpad\reports\*.dmp`
+  （minidump，`ptype=browser`、模块列表里能看到注入的 `tsbx.dll`）；
+  **别家 Tauri 应用（Clash Verge）从同一沙箱启动也照样崩**——是机器级现象；
+- 用户双击启动（沙箱外）完全正常：主窗口、宠物都渲染，数据持续刷新。
+
+**推论：凡是从工具 shell 启动 GUI 应用验证「页面是否在跑」，一律不可信。**
+心跳类回归（`tools/verify_pet_beat.py`、`tools/check_render.py`）必须从沙箱外运行，
+或由用户手动启动后观察。排查时先看 Crashpad dump，比猜前端/CSS/节流快得多。
+
+### 其它开发约定
+
+- 采样只在 Rust 后台线程（`sampler.rs`，由 `lib.rs` 装配），前端每拍 `invoke` 拉最后一次快照——不要在前端重复采样；
+- `src-tauri/src/sampler.rs` 的 `TOP_N` 控制进程榜长度；
+- localStorage 键沿用历史 `wm.` 前缀（品牌已从 WinMonitor 改名 PulseDeck，但键名**不改**，如 `wm.pawnioTipMuted`、`wm.petConfig`）；
+- 无 lint / typecheck 配置（无 TypeScript、无 ESLint），约束靠单测与本文档锁定；
+- 注释、文档、commit message 均为中文；commit 用约定式前缀（如 `feat(fan):` / `chore(brand):` / `refactor(pet):`）。
+
+## 目录结构
+
+```
+├─ index.html / pet.html        前端两个入口（主面板 / 桌面宠物）
+├─ vite.config.js               多入口构建（index + pet 共用一份产物）
+├─ package.json
+├─ src/                         前端（Vite）
+│  ├─ main.js                   主面板：轮询 + 渲染
+│  ├─ pet.js + pet.css          宠物页面
+│  ├─ style.css
+│  ├─ modules/{format.js,charts.js}
+│  ├─ assets/pet/               抠底后的宠物贴图（打包用，6 档 × 8 帧）
+│  └─ assets/img/pet/           宠物源图（不参与打包，浅灰底无 alpha）
+├─ src-tauri/
+│  ├─ tauri.conf.json
+│  ├─ capabilities/default.json
+│  ├─ resources/pawnio/         IntelMSR.bin（温度模块）+ PawnIO_setup.exe（官方安装器，原样分发）
+│  │                            来源 / 许可 / 再分发条款见同目录 NOTICE.md
+│  └─ src/
+│     ├─ main.rs                二进制入口
+│     ├─ lib.rs                 Tauri 装配 + 托盘 + 采样线程 + 命令（含 diag/smoke 测试）
+│     ├─ sampler.rs             采样编排（CPU/内存/磁盘/网络/进程/GPU/温度；TOP_N 控制进程榜长度）
+│     ├─ gpu.rs                 GPU：NVML 优先，PDH 兜底
+│     ├─ fan.rs                 风扇转速：厂商私有(联想) → NVML → LHM/OHM WMI → ACPI，读不到就诚实降级
+│     ├─ vendor.rs              厂商私有通道的调度与结果挑选（读取桥接产出的 JSON）
+│     ├─ thermal.rs             CPU/GPU 温度 + CPU 封装功耗：多源探测 + 有效性过滤
+│     ├─ pdh.rs                 PDH 性能计数器封装
+│     ├─ wmi.rs                 WMI(COM) 查询封装（ACPI 热区、显卡名、OHM/旧版 LHM 传感器、联想 ACPI-WMI 方法调用）
+│     ├─ pawnio.rs              PawnIO 驱动直连：载入模块、读 MSR、解 DTS 温度
+│     ├─ pawnio_setup.rs        PawnIO 探测（设备能否打开）+ 静默安装随包安装器
+│     ├─ msr_bridge.rs          提权子进程：读 MSR + 联想风扇，写 pawnio.json（主进程只读该文件）
+│     ├─ pet.rs                 宠物窗口生命周期（Rust 持有；BROWSER_ARGS 一致性单测在此）
+│     ├─ battery.rs             电池读数整理
+│     ├─ win32.rs               Win32 薄封装（电源、内存提交量）
+│     └─ model.rs               与前端交换的数据模型
+├─ tools/                       Python 辅助脚本
+│  ├─ copy_pet_frames.py        宠物贴图抠底（连通性洪水填充）
+│  ├─ check_pet_frames.py       贴图自检（有问题非零退出）
+│  ├─ preview_pet_frames.py     贴图联络表（人眼验收）
+│  ├─ make_icons.py             图标生成（Pillow）
+│  ├─ verify_bridge_exit.py     桥接进程收尾验收
+│  ├─ verify_pet_beat.py        宠物心跳回归（必须沙箱外运行）
+│  └─ check_render.py           渲染自检（必须沙箱外运行）
+├─ docs/                        逆向与方案评估笔记（改风扇/温度采集前必读）
+└─ shots/                       README / 验收用截图
+```
+
+## 已知限制
+
+- **仅支持 Windows x64**，暂无 macOS / Linux 计划（大量数据源是 Win32 / WMI / PDH 专有）；
+- **AMD 平台暂不支持 MSR 直读**：CPU 温度回退 ACPI 热区 / PDH，能否读到取决于固件；
+- **非联想机型的 CPU 风扇读不到**：风扇挂在主板 Super I/O / EC 上，通用接口不存在；
+  为什么不引入 lhm-service / Super I/O 直读，见 `docs/风扇转速方案评估.md`；
+- **笔记本 N 卡风扇普遍 `N/A`**（由 EC 控制，NVML 读不到），桌面 N 卡常有值；
+- 部分老平台 / 虚拟机没有 RAPL 能量计数器，CPU 封装功耗显示 `--`；
+- Windows 不公开适配器输出功率，「电源功率」只能给电池侧功率 + CPU 封装功耗；
+- 桌面宠物目前是固定一套机器人狐狸素材，暂不支持自定义形象。
+
+## 路线图
 
 - 采样数据落盘 CSV，用于长时间基线分析
 - 进程级 GPU 归属（`GPU Engine` 计数器里本来就带 pid，可以做成 GPU 版进程榜）
 - 告警阈值：CPU 温度 / GPU 温度超阈值时托盘气泡提醒
+
+## 参与贡献
+
+欢迎 Issue 与 PR！
+
+1. Fork 本仓库并创建你的分支（如 `feat/xxx`）；
+2. 按[从源码构建](#从源码构建)搭好环境，`npm run dev` 跑起来；
+3. 提交前跑通测试：`cargo test -p pulse-deck`；动了宠物贴图还要过
+   `python tools/check_pet_frames.py`；
+4. commit message 用中文约定式前缀（`feat(fan):` / `fix(pet):` / `docs:` …），一个提交做一件事；
+5. 发 PR 时简单说清改了什么、在什么机型上验证过（CPU / GPU / 系统版本）。
+
+**改敏感区域前请先读**：本文的[开发深入笔记](#开发深入笔记)、`AGENTS.md` 的硬性红线，
+以及 `docs/` 下的采集机制分析。数据采集类 Issue 建议附上机型信息与
+`%LOCALAPPDATA%\PulseDeck\pawnio.log`（如存在），方便定位通道问题。
+
+## 致谢
+
+- [Tauri](https://tauri.app) / [wry](https://github.com/tauri-apps/wry) —— 应用框架与 WebView 封装
+- [sysinfo](https://github.com/GuillaumeGomez/sysinfo) —— CPU / 内存 / 磁盘 / 网络采样
+- [nvml-wrapper](https://github.com/Cldfire/nvml-wrapper) —— NVIDIA NVML 绑定
+- [PawnIO](https://pawnio.eu)（[namazso](https://github.com/namazso)）—— 通用内核 IO 驱动；
+  IntelMSR 模块来自 [namazso/PawnIO.Modules](https://github.com/namazso/PawnIO.Modules)
+- [OpenHardwareMonitor](https://openhardwaremonitor.org) / [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor)
+  —— WMI `Sensor` 通道的兼容对象与 PawnIO 安装器分发先例
+- 联想 LegionZone 的公开行为为厂商通道逆向提供了参照（见 `docs/LegionZone采集机制分析.md`）
+
+## 许可证
+
+本项目自身代码以 **Apache-2.0** 发布，见 [LICENSE](LICENSE)。
+
+随包分发的第三方组件有其独立条款，均记录在 `src-tauri/resources/pawnio/NOTICE.md`：
+
+| 组件 | 许可 | 分发要求 |
+| -- | -- | -- |
+| `PawnIO_setup.exe`（官方安装器） | 专有（All rights reserved） | **仅允许原样（unmodified）再分发**，改一个字节即违约且破坏 Authenticode 签名 |
+| `IntelMSR.bin`（PawnIO 模块） | LGPL-2.1 | 来源 namazso/PawnIO.Modules v0.1.6 |
+
+随包分发的**全部第三方内容**——上表组件、宠物贴图的 AI 素材来源、全部 Rust/npm 依赖清单
+及其许可证全文——汇总记录在 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
