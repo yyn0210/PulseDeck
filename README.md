@@ -360,7 +360,7 @@ Usage: PawnIOSetup.exe [-install] [-uninstall] [-unrestricted] [-debuginfo] [-si
 ```bash
 git clone https://github.com/yyn0210/PulseDeck.git
 cd PulseDeck
-npm install
+npm ci             # 按 package-lock.json 精确安装（改过 package.json 依赖后改用 npm install 刷新锁文件）
 npm run dev        # 开发模式（Vite dev server :1420 + Tauri 窗口；期间保持 Vite 存活）
 npm run build      # 完整打包：前端 + exe + NSIS 安装包
 npm run build:exe  # 只出 exe（src-tauri/target/release/pulse-deck.exe），跳过 NSIS

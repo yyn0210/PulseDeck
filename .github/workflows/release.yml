@@ -40,9 +40,11 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
 
+      # 与 CI 一致：npm ci + package-lock.json，保证打版用的依赖树可复现
       - name: 安装前端依赖
-        run: npm install
+        run: npm ci
 
       - name: 校验 tag 与 tauri.conf.json 版本一致
         shell: pwsh

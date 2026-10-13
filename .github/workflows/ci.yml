@@ -37,10 +37,14 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
 
-      # 仓库未提交 package-lock.json，无法用 npm ci / setup-node 缓存
+      # 用 npm ci 而非 npm install：锁文件把依赖树钉死。
+      # 教训：2026-10-13 那次 CI 挂在这里，npm error E404 rollup-4.64.6.tgz ——
+      # 无锁文件时每次 install 都解析「当前最新版」，正好撞上 rollup 刚发布、
+      # tarball 还没同步到 CDN 的那几分钟。锁文件同时让 setup-node 的缓存可用。
       - name: 安装前端依赖
-        run: npm install
+        run: npm ci
 
       # Cargo.toml 在 src-tauri/ 下，仓库根没有 workspace 清单
       # diag/smoke 用例在无硬件环境按设计降级（缺 NVIDIA/电池/联想风扇时只打印不断言）
