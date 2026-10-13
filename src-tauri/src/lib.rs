@@ -121,9 +121,14 @@ fn get_pet_metrics(state: State<'_, AppState>) -> pet::PetMetrics {
 ///
 /// 用途见 `pet::LAST_BEAT_MS`：设置页据此显示「运行中 / 未响应」，
 /// 排查「窗口在但没画出来」时可开 `PULSEDECK_PET_TRACE=1` 落盘确认。
+///
+/// 顺带把拖动出来的位置落盘：`WindowEvent::Moved` 只改内存（拖动时事件太密），
+/// 而窗口位置没有「拖动结束」事件可用——这条现成的 1Hz 节拍正好当写盘时机，
+/// 拖动停止后 1s 内必定写进 `pet.json`。
 #[tauri::command]
-fn pet_heartbeat(app: tauri::AppHandle) {
+fn pet_heartbeat(app: tauri::AppHandle, state: State<'_, AppState>) {
     pet::record_beat(&app);
+    state.pet.flush_position();
 }
 
 /// 宠物窗口的就绪状态：是否开着、页面心跳是否新鲜
@@ -513,6 +518,18 @@ pub fn run() {
     sampler.set_fan_pref(fan_pref.clone());
 
     tauri::Builder::default()
+        // 单实例闸门必须**第一个**注册（插件文档要求）：第二次启动时新进程会立刻退出，
+        // 这里只负责把已有实例的主窗口拉到前台。
+        //
+        // 提权桥接子进程不受影响：它带 `--pawnio-bridge`，在 `main.rs` 里
+        // 走 `run_bridge_if_requested()` 直接返回，根本不会走到这个 Builder。
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.show();
+                let _ = w.unminimize();
+                let _ = w.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None::<Vec<&str>>,
@@ -580,14 +597,45 @@ pub fn run() {
                 Ok(())
             }
         })
-        .on_window_event(move |window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+        .on_window_event(move |window, event| match event {
+            // 「关闭主窗口 = 隐藏到托盘」只适用于**主窗口**。
+            //
+            // 宠物窗口绝不能走这条：它是无边框挂件，`hide()` 之后桌面上空无一物，
+            // 可窗口对象还在、配置里 `enabled` 也还是 true——设置页于是显示
+            // 「运行中」或「窗口在但页面没有心跳」，而用户面对的是一个
+            // 桌面上什么都没有、设置页却说一切正常的界面，完全无从判断。
+            // （更糟的是隐藏页会被 Chromium 节流，心跳必然变旧，状态行给出的
+            // 「WebView 未渲染」是个错误方向的诊断。）
+            //
+            // 让它按默认行为真的关掉：状态行就会如实说
+            // 「窗口未创建 · 保存设置或重启一次应用即可」，而那正是恢复的正确做法
+            // （`set_pet_config` 每次都调 `sync_window`，配置里还开着就会重建）。
+            tauri::WindowEvent::CloseRequested { api, .. } if window.label() == "main" => {
                 if close_flag.load(Ordering::Relaxed) {
                     // 隐藏到托盘，采样线程继续在后台跑
                     let _ = window.hide();
                     api.prevent_close();
                 }
             }
+            // 记住宠物窗口被拖到哪了。拖动期间每秒几十个事件，这里**只改内存**，
+            // 落盘见 `PetStore::set_position`（心跳与销毁时各写一次）。
+            tauri::WindowEvent::Moved(position) if window.label() == pet::WINDOW_LABEL => {
+                if let Some(state) = window.app_handle().try_state::<AppState>() {
+                    // 存的坐标与 `WebviewWindowBuilder::position` 一致（逻辑像素）
+                    let scale = window.scale_factor().unwrap_or(1.0).max(0.1);
+                    state
+                        .pet
+                        .set_position([position.x as f64 / scale, position.y as f64 / scale]);
+                }
+            }
+            // 宠物窗口被销毁（关掉开关 / 在桌面上关掉它）时立刻落盘，
+            // 免得「刚拖好就关掉」还要等下一次心跳
+            tauri::WindowEvent::Destroyed if window.label() == pet::WINDOW_LABEL => {
+                if let Some(state) = window.app_handle().try_state::<AppState>() {
+                    state.pet.flush_position();
+                }
+            }
+            _ => {}
         })
         .build(tauri::generate_context!())
         .expect("构建 Tauri 应用失败")

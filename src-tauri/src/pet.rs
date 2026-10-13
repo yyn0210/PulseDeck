@@ -7,7 +7,7 @@
 //! * **读数走专用命令**：宠物窗口只需要 3~4 个数，不值得每拍搬一整份 `Snapshot`
 //!   （里面还有进程榜与磁盘列表），所以单独给一个 `pet_metrics`。
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use serde::{Deserialize, Serialize};
@@ -65,6 +65,17 @@ pub struct PetConfig {
     pub metrics: Vec<String>,
     /// 整体不透明度 0.3 ~ 1.0
     pub opacity: f32,
+    /// 窗口左上角，**逻辑像素**（与 `WebviewWindowBuilder::position` 同一套坐标）；
+    /// `None` = 用户没拖过，用默认落点（主显示器右下角）。
+    ///
+    /// 位置由**拖动**产生（`WindowEvent::Moved` → [`PetStore::set_position`]），
+    /// 不由设置页决定——前端提交的配置里根本没有这个字段，所以：
+    /// * `#[serde(default)]` 是必需的，否则前端一提交就反序列化失败；
+    /// * 老版本的 `pet.json` 也没有这个字段，缺了它**必须**还能读出来
+    ///   （读不出来就退回默认配置 = 宠物被静默关掉，见 `old_config_without_position_still_parses`）；
+    /// * [`PetStore::set`] 会用内存里那份覆盖前端传来的值，免得设置页一保存就清空位置。
+    #[serde(default)]
+    pub position: Option<[f64; 2]>,
 }
 
 impl Default for PetConfig {
@@ -73,6 +84,7 @@ impl Default for PetConfig {
             enabled: false,
             metrics: METRIC_KEYS.iter().map(|s| s.to_string()).collect(),
             opacity: 1.0,
+            position: None,
         }
     }
 }
@@ -95,12 +107,40 @@ impl PetConfig {
             self.opacity = 1.0;
         }
         self.opacity = self.opacity.clamp(0.3, 1.0);
+
+        // 位置必须是有限数：NaN / inf 会让建窗定位算出乱七八糟的坐标
+        if let Some([x, y]) = self.position {
+            if !x.is_finite() || !y.is_finite() {
+                self.position = None;
+            }
+        }
     }
+}
+
+/// 合成真正生效的配置：「前端提交的那份」+「已保存的位置」。
+///
+/// 位置归拖动所有（见 [`PetStore::set_position`]），而前端只提交
+/// `enabled` / `metrics` / `opacity` 三个字段——但整份配置会经 localStorage
+/// 转一圈再回来（`main.js` 把返回值原样存下来，启动时又推给后端），
+/// 所以这里必须丢掉前端那份位置，否则设置页每保存一次（哪怕只是拉一下不透明度）
+/// 位置就被清空，宠物下次从默认落点冒出来。
+fn adopt_position(mut submitted: PetConfig, stored: Option<[f64; 2]>) -> PetConfig {
+    submitted.position = stored;
+    submitted
 }
 
 /// 配置的共享句柄（主线程与命令线程共用一份）
 #[derive(Clone)]
-pub struct PetStore(Arc<Mutex<PetConfig>>);
+pub struct PetStore {
+    config: Arc<Mutex<PetConfig>>,
+    /// 位置改过但还没落盘（`Moved` 事件只改内存，见 `set_position`）
+    position_dirty: Arc<AtomicBool>,
+    /// 串行化写盘。`save()` 现在会被三个线程调到：设置页命令（tokio 线程池）、
+    /// 宠物页心跳（每秒一次）、窗口销毁事件（主线程）。它们共用同一个
+    /// `pet.json.tmp`，并发时会出现「A 还在写、B 把它 rename 走」——
+    /// 于是配置里落进半个 JSON，下次启动解析失败、静默退回默认值。
+    save_lock: Arc<Mutex<()>>,
+}
 
 /// 排障日志：只有设了 `PULSEDECK_PET_TRACE` 才落盘，正常使用时零开销。
 ///
@@ -135,13 +175,18 @@ impl PetStore {
         let mut cfg = parsed.clone().unwrap_or_default();
         cfg.sanitize();
         plog(format!(
-            "load path={} parsed={} -> enabled={} metrics={:?}",
+            "load path={} parsed={} -> enabled={} metrics={:?} position={:?}",
             path.display(),
             parsed.is_some(),
             cfg.enabled,
-            cfg.metrics
+            cfg.metrics,
+            cfg.position
         ));
-        Self(Arc::new(Mutex::new(cfg)))
+        Self {
+            config: Arc::new(Mutex::new(cfg)),
+            position_dirty: Arc::new(AtomicBool::new(false)),
+            save_lock: Arc::new(Mutex::new(())),
+        }
     }
 
     pub fn get(&self) -> PetConfig {
@@ -151,12 +196,49 @@ impl PetStore {
     /// 落盘并返回清洗后的配置（前端回显以这份为准）
     pub fn set(&self, mut config: PetConfig) -> PetConfig {
         config.sanitize();
-        *self.lock() = config.clone();
+        let mut guard = self.lock();
+        let merged = adopt_position(config, guard.position);
+        *guard = merged.clone();
+        drop(guard);
+        self.save(&merged);
+        merged
+    }
+
+    /// 记录窗口当前位置（**只改内存，不落盘**）。
+    ///
+    /// 拖动时 Windows 连续发几十上百个 `WM_MOVE`，每个都写一次盘既无谓、
+    /// 也可能在模态拖动循环里拖慢响应。落盘交给两个时机：
+    /// * [`flush_position`]：宠物页每秒一次的心跳顺带写盘（拖动停止后 1s 内必定落盘），
+    ///   以及宠物窗口被销毁时（刚拖好就关掉的情形）；
+    /// * [`set`]：设置页保存配置时本来就要写盘。
+    ///
+    /// 覆盖不到的只剩「拖完直接杀进程」——位置是纯偏好，不值得为它加常驻定时器。
+    pub fn set_position(&self, position: [f64; 2]) {
+        if !position[0].is_finite() || !position[1].is_finite() {
+            return;
+        }
+        let mut guard = self.lock();
+        if guard.position == Some(position) {
+            return;
+        }
+        guard.position = Some(position);
+        self.position_dirty.store(true, Ordering::Relaxed);
+    }
+
+    /// 把待落盘的位置写进 `pet.json`；没有变化时直接返回（心跳每秒钟都会调它）。
+    pub fn flush_position(&self) {
+        if !self.position_dirty.swap(false, Ordering::Relaxed) {
+            return;
+        }
+        let config = self.get();
         self.save(&config);
-        config
+        plog(format!("flush_position 落盘 position={:?}", config.position));
     }
 
     fn save(&self, config: &PetConfig) {
+        // 同一份 tmp 只能有一个写者（见 `save_lock` 的注释）。
+        // 锁中毒不该把应用带崩，所以直接用 `into_inner` 忽略中毒。
+        let _serialize_writes = self.save_lock.lock().unwrap_or_else(|e| e.into_inner());
         let path = config_path();
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
@@ -174,7 +256,7 @@ impl PetStore {
 
     /// 锁中毒不该把整个应用带崩（release 是 panic=abort），所以直接取回内部数据
     fn lock(&self) -> MutexGuard<'_, PetConfig> {
-        self.0.lock().unwrap_or_else(|e| e.into_inner())
+        self.config.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 
@@ -206,7 +288,7 @@ pub fn sync_window(app: &tauri::AppHandle, config: &PetConfig) -> tauri::Result<
     ));
     if config.enabled {
         if !exists {
-            create_window(app)?;
+            create_window(app, config)?;
         }
     } else if let Some(win) = app.get_webview_window(WINDOW_LABEL) {
         plog("sync_window destroy");
@@ -310,8 +392,8 @@ fn get_main_environment(
     env
 }
 
-fn create_window(app: &tauri::AppHandle) -> tauri::Result<()> {
-    let (x, y) = default_position(app);
+fn create_window(app: &tauri::AppHandle, config: &PetConfig) -> tauri::Result<()> {
+    let (x, y) = restore_position(app, config);
     let url = WebviewUrl::App("pet.html".into());
     plog(format!("create_window url={url:?} size={WIN_W}x{WIN_H} at ({x},{y})"));
 
@@ -384,6 +466,43 @@ fn default_position(app: &tauri::AppHandle) -> (f64, f64) {
         }
     }
     (x.max(0.0), y.max(0.0))
+}
+
+/// 建窗落点：优先用上次拖动保存的位置，其次才是默认落点。
+///
+/// 保存的位置已经不在任何显示器上时（拔掉外接屏、改了显示器布局）回退默认落点——
+/// 否则宠物会落在看不见的地方，而且「关掉再打开」只会复用同一个坏位置，
+/// 用户没有任何自救手段（窗口无边框、不进任务栏，看不见就是彻底看不见）。
+fn restore_position(app: &tauri::AppHandle, config: &PetConfig) -> (f64, f64) {
+    if let Some([x, y]) = config.position {
+        if position_on_some_monitor(app, x, y) {
+            plog(format!("恢复保存的位置 ({x}, {y})"));
+            return (x, y);
+        }
+        plog(format!("保存的位置 ({x}, {y}) 不在任何显示器上，回退默认落点"));
+    }
+    default_position(app)
+}
+
+/// 逻辑坐标点是否落在某个显示器范围内。
+///
+/// 显示器给的是**物理像素**（各屏 `scale_factor` 还可能不同），而保存的位置是逻辑像素，
+/// 所以按每个显示器自己的缩放换算后再比。查不到显示器列表（极少见）时返回 true——
+/// 那属于异常路径，宁可相信保存的位置，也不要无故把宠物挪回默认角落。
+fn position_on_some_monitor(app: &tauri::AppHandle, x: f64, y: f64) -> bool {
+    let Ok(monitors) = app.available_monitors() else {
+        return true;
+    };
+    monitors.iter().any(|m| {
+        let scale = m.scale_factor().max(0.1);
+        let pos = m.position();
+        let size = m.size();
+        let left = pos.x as f64 / scale;
+        let top = pos.y as f64 / scale;
+        let right = left + size.width as f64 / scale;
+        let bottom = top + size.height as f64 / scale;
+        x >= left && x < right && y >= top && y < bottom
+    })
 }
 
 /* ------------------------------ 心跳 ------------------------------ */
@@ -473,6 +592,7 @@ mod tests {
             enabled: true,
             metrics: vec!["gpu".into(), "cpu".into(), "gpu".into(), "disk".into()],
             opacity: 5.0,
+            position: None,
         };
         cfg.sanitize();
         assert_eq!(cfg.metrics, vec!["gpu".to_string(), "cpu".to_string()]);
@@ -485,10 +605,73 @@ mod tests {
             enabled: true,
             metrics: vec!["nope".into()],
             opacity: 0.1,
+            position: None,
         };
         cfg.sanitize();
         assert_eq!(cfg.metrics, vec!["cpu".to_string()]);
         assert_eq!(cfg.opacity, 0.3);
+    }
+
+    /// 老版本的 `pet.json` 里没有 `position` 字段，**必须**还能反序列化。
+    ///
+    /// 缺 `#[serde(default)]` 时 `from_str` 直接失败，而 `PetStore::load` 对解析失败
+    /// 的处理是「退回默认配置」= 宠物被静默关掉、指标回默认——
+    /// 也就是说升级一次就把所有人的宠物设置清空，且没有任何提示。
+    #[test]
+    fn old_config_without_position_still_parses() {
+        let cfg: PetConfig =
+            serde_json::from_str(r#"{"enabled":true,"metrics":["gpu"],"opacity":0.8}"#)
+                .expect("缺少 position 字段的老配置必须能解析");
+        assert!(cfg.enabled);
+        assert_eq!(cfg.metrics, vec!["gpu".to_string()]);
+        assert_eq!(cfg.position, None);
+    }
+
+    /// 位置由拖动产生、不由设置页决定：前端提交（无 position）不能把已保存的位置清掉。
+    #[test]
+    fn submitted_config_does_not_clear_saved_position() {
+        let mut submitted = PetConfig {
+            enabled: true,
+            metrics: vec!["cpu".into()],
+            opacity: 0.9,
+            position: None,
+        };
+        submitted.sanitize();
+        let merged = adopt_position(submitted, Some([1234.0, 567.0]));
+        assert_eq!(merged.position, Some([1234.0, 567.0]));
+        assert_eq!(merged.opacity, 0.9);
+    }
+
+    /// NaN / inf 位置要被清洗掉，合法位置原样保留
+    #[test]
+    fn sanitize_drops_non_finite_position() {
+        let base = PetConfig {
+            enabled: true,
+            metrics: vec!["cpu".into()],
+            opacity: 1.0,
+            position: None,
+        };
+
+        let mut nan = PetConfig {
+            position: Some([f64::NAN, 10.0]),
+            ..base.clone()
+        };
+        nan.sanitize();
+        assert_eq!(nan.position, None, "NaN 位置必须被清掉");
+
+        let mut inf = PetConfig {
+            position: Some([10.0, f64::NEG_INFINITY]),
+            ..base.clone()
+        };
+        inf.sanitize();
+        assert_eq!(inf.position, None, "inf 位置必须被清掉");
+
+        let mut ok = PetConfig {
+            position: Some([12.0, 34.0]),
+            ..base
+        };
+        ok.sanitize();
+        assert_eq!(ok.position, Some([12.0, 34.0]));
     }
 
     /// 温度缺失时颜色来源应切到 CPU 占用，前端据此给不同的说明文案

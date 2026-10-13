@@ -117,7 +117,7 @@
   - 设置页「常规」可以关闭「关闭时最小化到托盘」，让关闭按钮直接退出。
 - **顶部提示条**：未安装 PawnIO 时，监控页顶部会出现一条可关闭的提醒（`#tipbar`），
   点「去设置」直接跳到设置页「高级采集」；点「×」后由用户选 **「永久关闭」**（写入
-  `localStorage['wm.pawnioTipMuted']`，跨启动生效）或 **「仅本次」**（只挡本次运行），也可「取消」。
+  `localStorage['pd.pawnioTipMuted']`，跨启动生效）或 **「仅本次」**（只挡本次运行），也可「取消」。
   永久关闭后，设置页「高级采集」底部会留一条「重新开启」链接，避免变成单向门。
   提示条只做提醒，**不在主页面弹 UAC**——安装入口始终在设置页。
 - **可调项**：
@@ -474,10 +474,11 @@ python tools/preview_pet_frames.py         # 人眼验收：出 shots/pet_frames
 1. **局部背景模型**：先用粗阈值（`COARSE_TOL=0.15`）从画面四边洪水填充拿到可信背景，再按
    24 格粗网格取中位数、空缺格用最近邻补齐、双线性上采样，得到一张**跟得上渐变的"局部背景色"图**。
 2. **软 alpha**：按「离**局部**背景色的最大通道差」做 `BG_FULL=0.06 → BG_EDGE=0.10` 的线性羽化。
-3. **洪水填充定内外**：从画面四边出发，沿 `dist < FLOOD_GATE=0.14` 的像素 4 连通蔓延，
+3. **洪水填充定内外**：从画面四边出发，沿 `dist < FLOOD_GATE=0.10` 的像素 4 连通蔓延，
    蔓延到的是「外面」（背景）；**蔓延不到的像素一律 alpha=1**。白色口鼻虽然颜色像背景，
    但被橘色毛 / 深色线围死、从边缘蔓延不进去 → 保住。
-   因为 `FLOOD_GATE > BG_EDGE`，内外交界处 alpha 已经连续过渡到 1，**不会出现硬边**。
+   因为 `FLOOD_GATE ≥ BG_EDGE`（默认两者都取 0.10），内外交界处 alpha 已经连续过渡到 1，
+   **不会出现硬边**。
 4. RGB **全程保持美术原色**：不反预乘、不调色、不模糊、不做形态学。
 
 > 真要去掉残余的浅色底噪，调 `BG_FULL/BG_EDGE`（抬高压住底色、降低更容易透明）；
@@ -487,9 +488,15 @@ python tools/preview_pet_frames.py         # 人眼验收：出 shots/pet_frames
 
 ### 宠物配置双写与排查
 
-配置有**两道来源**：前端 `localStorage['wm.petConfig']`（用户刚改的，启动时优先推给后端）与
+配置有**两道来源**：前端 `localStorage['pd.petConfig']`（用户刚改的，启动时优先推给后端）与
 后端 `pet.json`（后端自己恢复窗口用）。提交后一律以 **`set_pet_config` 的返回值**回显，
 因为后端会清洗配置（剔除非法指标、**至少保留一项**、透明度夹到 0.3~1.0）。
+
+窗口位置（`pet.json` 的 `position`，逻辑像素）**只由拖动产生**，前端的三件套里没有它：
+拖动时 `WindowEvent::Moved` 每秒几十个事件、只改内存，落盘搭在宠物页每秒一次的心跳
+（`pet_heartbeat` → `flush_position`）与窗口销毁事件上；后端 `set()` 里用 `adopt_position`
+把前端传来的空位置覆盖回内存那份，所以设置页保存配置不会把位置清掉。
+保存的位置已经不在任何显示器上时（拔掉外接屏）建窗回退默认落点，不会出现「宠物落在看不见的地方且无法找回」。
 
 **排查「宠物窗口在，但桌面上什么都没有」**：透明无边框窗口一旦 WebView 没渲染出来，
 界面上就是「纯透明 = 什么都没有」，肉眼分不清是关了还是坏了。所以：
@@ -544,7 +551,7 @@ http://localhost:1420/pet.html?mock=1&pawnio=missing&nogpu=1  # 连 GPU 占用�
 
 - 采样只在 Rust 后台线程（`sampler.rs`，由 `lib.rs` 装配），前端每拍 `invoke` 拉最后一次快照——不要在前端重复采样；
 - `src-tauri/src/sampler.rs` 的 `TOP_N` 控制进程榜长度；
-- localStorage 键沿用历史 `wm.` 前缀（品牌已从 WinMonitor 改名 PulseDeck，但键名**不改**，如 `wm.pawnioTipMuted`、`wm.petConfig`）；
+- localStorage 键用 `pd.` 前缀（`pd.petConfig` / `pd.pawnioTipMuted` / `pd.activeView`）；品牌改名时用过 `wm.`，但代码早已改成 `pd.` 且不做旧键迁移；
 - 无 lint / typecheck 配置（无 TypeScript、无 ESLint），约束靠单测与本文档锁定；
 - 注释、文档、commit message 均为中文；commit 用约定式前缀（如 `feat(fan):` / `chore(brand):` / `refactor(pet):`）。
 

@@ -217,7 +217,10 @@ if (img) {
 }
 
 function render(m, cfg) {
-  // 温度是首选依据；读不到就退回 CPU 占用（后端已把取舍写进 colorSource）
+  // 温度是首选依据；读不到就退回 CPU 占用。
+  // 判定依据是**实际数值**，不是后端的 `colorSource`（它和 `hasGpu` 一样目前前端没用到）：
+  // 两者同源，但手边就有数值时直接看它，不必依赖另一个字段是否传到位——
+  // 少一个字段就少一种「明明有温度却按占用着色」的可能。
   const temp = m && Number.isFinite(m.cpuTempC) ? m.cpuTempC : null;
   const byTemp = temp != null;
   const heat = byTemp ? temp : m ? Number(m.cpuPct) || 0 : 0;

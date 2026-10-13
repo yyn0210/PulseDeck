@@ -12,15 +12,22 @@ tsbx.dll 注入导致 WebView2 browser 进程 ~5.5s 后崩溃，截出来的必�
 
 import ctypes
 import ctypes.wintypes as wt
+import os
 import subprocess
 import sys
 import time
 
 u = ctypes.windll.user32
 
-EXE = sys.argv[1] if len(sys.argv) > 1 else r"D:\workspaces_jl\system-monitor\src-tauri\target\release\pulse-deck.exe"
+# 默认路径从脚本位置推出来，别写死绝对路径——仓库改过名（system-monitor → PulseDeck），
+# 写死的默认值会静默指向一个不存在的 exe。
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+EXE = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
+    ROOT, "src-tauri", "target", "release", "pulse-deck.exe"
+)
 WAIT = int(sys.argv[2]) if len(sys.argv) > 2 else 12
-OUT = sys.argv[3] if len(sys.argv) > 3 else r"D:\workspaces_jl\system-monitor\shots\_render_check.png"
+OUT = sys.argv[3] if len(sys.argv) > 3 else os.path.join(ROOT, "shots", "_render_check.png")
 
 
 def windows(pid):
@@ -84,6 +91,8 @@ def main():
         for _, im in imgs:
             canvas.paste(im, (0, y))
             y += im.height
+        out_dir = os.path.dirname(os.path.abspath(OUT))
+        os.makedirs(out_dir, exist_ok=True)
         canvas.save(OUT)
         print(f"已保存 {OUT}")
 
