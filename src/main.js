@@ -110,6 +110,7 @@ function render(s) {
   if (!viewSettings.classList.contains("hidden")) {
     renderAdvanced();
     refreshPetStatus();
+    refreshTaskbarStatus();
   } else {
     renderPawnioTip();
   }
@@ -917,6 +918,130 @@ petOpacity.addEventListener("input", () => {
 });
 petOpacity.addEventListener("change", () => pushPetCfg(readPetForm()));
 
+/* ---------------- 设置：任务栏显示 ---------------- */
+
+/* 与桌面宠物同一套路：前端只负责「改配置 + 本地缓存」，窗口的创建 / 销毁 / 贴到任务栏哪
+ * 全由后端 `set_taskbar_config` 完成（后端会清洗配置：剔除非法指标、至少保留一项），
+ * 所以每次提交都用**返回值**回显。挂件没有「位置」也没有「透明度」——
+ * 它是贴在任务栏上的一条，位置由后端按任务栏算，不透明度由任务栏主题决定。 */
+const TASKBAR_KEY = "pd.taskbarConfig";
+const TASKBAR_FALLBACK = { enabled: false, metrics: ["cpu", "mem", "net"] };
+
+const taskbarSwitch = document.getElementById("opt-taskbar");
+const taskbarMetricBox = document.getElementById("taskbar-metrics");
+const taskbarStatusRow = document.getElementById("taskbar-status");
+
+let taskbarCfg = { ...TASKBAR_FALLBACK };
+/** 挂件窗口的运行状态（由 taskbar_status 每拍刷新，仅设置页可见时查） */
+let taskbarAlive = null;
+
+/** 状态行：把「开着」「藏起来了」「没建出来」分开说。
+ * 全屏应用在前台时挂件是**故意**藏起来的，不能跟「坏了」混为一谈。 */
+function renderTaskbarStatus() {
+  if (!taskbarStatusRow) return;
+  const on = !!taskbarCfg.enabled;
+  let state = "idle";
+  let text = "已关闭";
+  if (on && taskbarAlive) {
+    const { windowOpen, alive, heartbeatAgeMs, hiddenFullscreen } = taskbarAlive;
+    if (!windowOpen) {
+      state = "warn";
+      text = "窗口未创建 · 保存设置或重启一次应用即可";
+    } else if (hiddenFullscreen) {
+      text = "全屏应用在前台，已暂时隐藏";
+    } else if (alive) {
+      state = "ok";
+      text = `运行中 · ${Math.max(1, Math.round((heartbeatAgeMs ?? 1000) / 1000))}s 内心跳`;
+    } else {
+      state = "warn";
+      text = "窗口在，但页面没有心跳 · 多为 WebView 未渲染，可重启应用试试";
+    }
+  } else if (on) {
+    text = "检测中…";
+  }
+  taskbarStatusRow.className = `adv-item ${state}`;
+  setText("taskbar-status-text", text);
+}
+
+async function refreshTaskbarStatus() {
+  try {
+    taskbarAlive = await invoke("taskbar_status");
+  } catch (e) {
+    taskbarAlive = null;
+  }
+  renderTaskbarStatus();
+}
+
+function taskbarMetricInputs() {
+  return Array.from(taskbarMetricBox.querySelectorAll('input[type="checkbox"]'));
+}
+
+/** 配置 → 控件（包括后端清洗后的回显） */
+function paintTaskbarCfg() {
+  taskbarSwitch.checked = !!taskbarCfg.enabled;
+  taskbarMetricInputs().forEach((input) => {
+    input.checked = (taskbarCfg.metrics || []).includes(input.value);
+    const chip = input.closest(".chip");
+    if (chip) chip.classList.toggle("is-on", input.checked);
+  });
+  setText("taskbar-tag", taskbarCfg.enabled ? "已开启" : "已关闭");
+  renderTaskbarStatus();
+}
+
+/** 控件 → 配置 */
+function readTaskbarForm() {
+  return {
+    enabled: taskbarSwitch.checked,
+    metrics: taskbarMetricInputs()
+      .filter((i) => i.checked)
+      .map((i) => i.value),
+  };
+}
+
+async function pushTaskbarCfg(cfg) {
+  try {
+    taskbarCfg = await invoke("set_taskbar_config", { config: cfg });
+  } catch (e) {
+    console.error("保存任务栏显示配置失败:", e);
+    return;
+  }
+  try {
+    localStorage.setItem(TASKBAR_KEY, JSON.stringify(taskbarCfg));
+  } catch (e) {
+    /* 隐私模式等场景不可写：本次运行内仍生效，下次启动回落到后端 taskbar.json */
+  }
+  paintTaskbarCfg();
+  refreshTaskbarStatus();
+}
+
+async function initTaskbarSettings() {
+  let stored = null;
+  try {
+    stored = JSON.parse(localStorage.getItem(TASKBAR_KEY) || "null");
+  } catch (e) {
+    stored = null;
+  }
+  if (stored && Array.isArray(stored.metrics)) {
+    // 本地缓存优先（用户上次的选择），顺带把挂件恢复出来
+    await pushTaskbarCfg(stored);
+  } else {
+    try {
+      taskbarCfg = await invoke("get_taskbar_config");
+    } catch (e) {
+      console.error("读取任务栏显示配置失败:", e);
+      taskbarCfg = { ...TASKBAR_FALLBACK };
+    }
+  }
+  paintTaskbarCfg();
+  await refreshTaskbarStatus();
+}
+
+taskbarSwitch.addEventListener("change", () => pushTaskbarCfg(readTaskbarForm()));
+
+taskbarMetricInputs().forEach((input) => {
+  input.addEventListener("change", () => pushTaskbarCfg(readTaskbarForm()));
+});
+
 /* ---------------- 页面切换：监控 / 设置 ---------------- */
 
 const viewMonitor = document.getElementById("view-monitor");
@@ -933,6 +1058,7 @@ function switchView(name) {
   if (toSettings) {
     renderAdvanced();
     refreshPetStatus();
+    refreshTaskbarStatus();
   }
   // 提示条只在监控页出现，切页后立即同步
   renderPawnioTip();
@@ -987,4 +1113,5 @@ onTipClick("tip-unmute", () => {
  * （不用 top-level await，保持构建目标兼容） */
 initSettings();
 initPetSettings();
+initTaskbarSettings();
 tick().then(schedule);

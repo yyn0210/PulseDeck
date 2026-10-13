@@ -26,7 +26,23 @@ tauri-plugin-autostart = "2"
 # 单实例：第二次启动只把已有实例的主窗口拉到前台，避免两个托盘图标 / 两只宠物，
 # 以及两个实例对 pet.json、fan.json 的「后写覆盖」互相踩
 tauri-plugin-single-instance = "2"
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Performance", "Win32_System_Wmi", "Win32_System_Com", "Win32_System_Ole", "Win32_System_Variant", "Win32_Security", "Win32_UI_Shell", "Win32_System_Threading", "Win32_System_IO", "Win32_Storage_FileSystem"] }
+windows = { version = "0.62", features = [
+  "Win32_Foundation",
+  "Win32_System_Performance",
+  "Win32_System_Wmi",
+  "Win32_System_Com",
+  "Win32_System_Ole",
+  "Win32_System_Variant",
+  "Win32_Security",
+  "Win32_UI_Shell",
+  "Win32_System_Threading",
+  "Win32_System_IO",
+  "Win32_Storage_FileSystem",
+  # 任务栏挂件（taskbar.rs）：找任务栏 / 通知区域窗口、读前台窗口、重新置顶
+  "Win32_UI_WindowsAndMessaging",
+  # 任务栏配色（SystemUsesLightTheme）取自注册表
+  "Win32_System_Registry",
+] }
 webview2-com = "0.39"
 
 [features]

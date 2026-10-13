@@ -339,6 +339,17 @@ pub fn capture_main_environment(app: &tauri::AppHandle) {
     let _ = MAIN_ENV.set(env.map(EnvHolder));
 }
 
+/// 主窗口的 WebView2 环境，供主窗口之外的窗口（桌面宠物 / 任务栏挂件）复用。
+///
+/// 每个「第二个 WebView」窗口都必须复用主窗口的环境（同一个浏览器进程、同一份用户数据目录），
+/// 否则 WebView2 会以 `HRESULT(0x8007139F)` 静默建不出来——桌面表现就是
+/// 「开关打开了但什么都不出现」，且没有任何提示。
+pub fn shared_webview_environment(
+    app: &tauri::AppHandle,
+) -> Option<webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Environment> {
+    main_environment(app)
+}
+
 /// 取主窗口环境：优先用启动时的缓存；没缓存到就现场再取一次（此刻若在主线程上仍有效）
 #[cfg(windows)]
 fn main_environment(

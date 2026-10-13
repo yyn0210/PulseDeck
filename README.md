@@ -2,7 +2,7 @@
 
 # 脉盘 PulseDeck
 
-** 桌面系统监控小工具 + 会随 CPU 温度换装的桌面宠物**
+** 桌面系统监控小工具 + 会随 CPU 温度换装的桌面宠物 + 任务栏显示**
 
 *A lightweight desktop system monitor with a temperature-reactive desktop pet.*
 
@@ -34,6 +34,7 @@
 - [下载与安装](#下载与安装)
 - [快速上手](#快速上手)
 - [桌面宠物](#桌面宠物)
+- [任务栏显示](#任务栏显示)
 - [数据来源与降级策略](#数据来源与降级策略)
 - [从源码构建](#从源码构建)
 - [调试与自测](#调试与自测)
@@ -54,6 +55,9 @@
   联想机型还能读厂商私有的真实风扇 RPM——绝不拿占空比冒充转速
 - **桌面宠物**：置顶小狐狸在桌面上跑动，显示 CPU / 内存 / GPU 使用率，
   **形象随 CPU 温度 6 档切换**（38 蓝 → 94 红），过热档还会加速喘气
+- **任务栏显示**：把 CPU / 内存 / GPU / 网络 / 磁盘 / 电池 / 温度 / 功率贴在 Windows 任务栏上的一条
+  细挂件里（任务栏显示模式）：停在通知区域（托盘图标 / 时钟）左侧、不抢焦点、不进 Alt+Tab，
+  全屏游戏 / 视频时自动隐藏
 - **托盘常驻**：关窗不退出，后台继续采样；支持开机自启、暂停刷新
 - **轻量原生**：Tauri 2 打包，无 Electron、无第三方图表库，canvas 手绘所有图表
 - **隐私友好**：全部采集本地完成，无任何上传 / 遥测
@@ -75,12 +79,13 @@
 
 顶部导航在 **监控** / **设置** 两个页面间切换（会记住上次停留的页面）：
 
-| 设置页分组 | 内容                                              |
-| ----- | ----------------------------------------------- |
-| 常规    | 开机自启、关闭时最小化到托盘、是否列出无流量网卡                        |
-| 采样    | 刷新间隔（500 ms / 1 s / 2 s / 5 s）                  |
-| 桌面宠物  | 是否启用、显示内容（CPU / 内存 / GPU 使用率）、不透明度；形象按 CPU 温度分 6 档切换 |
-| 高级采集  | 各采集通道状态（PawnIO 内核驱动、厂商风扇通道）+ 未就绪时的操作入口          |
+| 设置页分组  | 内容                                              |
+| ------ | ----------------------------------------------- |
+| 常规     | 开机自启、关闭时最小化到托盘、是否列出无流量网卡                        |
+| 采样     | 刷新间隔（500 ms / 1 s / 2 s / 5 s）                  |
+| 桌面宠物   | 是否启用、显示内容（CPU / 内存 / GPU 使用率）、不透明度；形象按 CPU 温度分 6 档切换 |
+| 任务栏显示  | 是否启用、显示内容（CPU / 内存 / GPU / 网络 / 磁盘 / 电池 / 温度 / 功率）、挂件状态行 |
+| 高级采集   | 各采集通道状态（PawnIO 内核驱动、厂商风扇通道）+ 未就绪时的操作入口          |
 
 > 窗口默认 **1240×820**、可自由缩放。内容量会随硬件规模（核心数 / 卷数 / 网卡数）变化，
 > 当内容高于窗口时，**页面内部会出现纵向滚动条**——向下滚动即可看到下方全部内容。
@@ -123,7 +128,8 @@
 - **可调项**：
   - 采样间隔：设置页「采样 → 刷新间隔」下拉框（500 ms / 1 s / 2 s / 5 s），同步调整后端采样线程间隔；
   - 暂停/继续：停止前后端轮询，保留最后一帧数据（右上角按钮，托盘菜单里也能切）；
-  - 开机自启：设置页「常规」开关，或托盘菜单直接勾选。
+  - 开机自启：设置页「常规」开关，或托盘菜单直接勾选；
+  - 桌面宠物 / 任务栏显示：设置页对应卡片（开关 + 显示内容），改完立即生效。
 
 ## 桌面宠物
 
@@ -143,6 +149,32 @@
   并在脚下标注「温度 -- · 按占用切换形象」、悬浮提示里说明原因——**不做无声降级**。
 - 整只宠物可拖动，**双击呼出主面板**（主面板常驻托盘时很方便）。
 - 主面板「关闭时最小化到托盘」不影响宠物：**窗口由 Rust 侧持有**，与主窗口生命周期解耦。
+
+## 任务栏显示
+
+设置页「任务栏显示」里开启后，任务栏上会多出一条**细挂件**：默认停在**通知区域（托盘图标 / 时钟）左侧**，
+实时显示你勾选的指标。它相当于系统监控类工具里的「任务栏显示模式」，但**不修改系统任务栏**——
+是一条贴在任务栏上的置顶无边框小窗（页面可用 `taskbar.html?mock=1` 脱离真机预览，见「前端预览与 Mock」）。
+
+- **可选内容**（设置页勾选，至少一项，按勾选顺序排列）：
+  | 键 | 显示 | 缺数据时 |
+  | -- | -- | -- |
+  | `cpu` / `mem` / `gpu` | `CPU 34%`（占用 ≥60% 转黄、≥85% 转红） | GPU 读不到显示 `GPU --` |
+  | `net` | `↓1.24MB/s ↑56KB/s`（下行绿 / 上行黄，全机合计） | — |
+  | `disk` | `读 2.1MB/s 写 300KB/s`（所有卷合计） | — |
+  | `bat` | `电池 78%`（≤30% 黄、≤15% 红） | 无电池显示 `电池 --` |
+  | `temp` | `温度 62℃`（≥74℃ 黄、≥84℃ 红，与宠物分档同源） | 读不到显示 `温度 --` |
+  | `power` | `功率 19.4W`：优先电池充/放电功率，没充没放时是 CPU 封装功耗 | 都没有显示 `功率 --` |
+- **不抢焦点**：窗口带 `WS_EX_NOACTIVATE`（`focusable(false)`），点击挂件不会把焦点从你正在用的应用上抢走；
+  也**不进 Alt+Tab、不在任务栏里多出按钮**（`skip_taskbar`）。
+- **单击挂件呼出主面板**（和托盘图标一样方便）；主面板最小化到托盘时挂件照常贴在任务栏上。
+- **全屏应用在前台时自动隐藏**（游戏 / 播放器 / 网页全屏视频），退出全屏就回来——不会压在你的视频画面上。
+- **跟着任务栏走**：任务栏换成上下左右任一条边、改厚度（小图标 / 大图标）、改 DPI、
+  explorer 重启（`Shell_TrayWnd` 换句柄）、切浅色 / 深色主题，挂件都会在一秒内跟过去。
+  浅色任务栏用深色文字、深色任务栏用浅色文字（读的是注册表里的「Windows 模式」）。
+- 开了**任务栏自动隐藏**时，挂件贴在屏幕底边——那一处正是任务栏弹出来的位置（任务栏滑走了，挂件仍然可见）。
+- 配置落 `%LOCALAPPDATA%\PulseDeck\taskbar.json`，设置页另外缓存一份在
+  `localStorage['pd.taskbarConfig']`（与桌面宠物同一套双写规则）。
 
 ## 数据来源与降级策略
 
@@ -407,19 +439,20 @@ python tools/verify_bridge_exit.py
 
 ### 宠物窗口是第二个 WebView
 
-**① 附加参数必须两个窗口一致。** Windows 下同一份 WebView2 用户数据目录只能对应
+**① 附加参数必须每个窗口一致。** Windows 下同一份 WebView2 用户数据目录只能对应
 「一组」`additionalBrowserArgs`。主窗口用 A、宠物窗口用 B（包括 B 是 wry 默认串），
 建第二个 WebView 时 WebView2 直接返回 `HRESULT(0x8007139F)`(ERROR_INVALID_STATE)，
 没有任何 UI 提示，桌面表现就是「宠物开关打开了但什么都不出现」。
-当前**两个窗口都不带附加参数**（曾加过 anti-throttling 参数，后证实无用且已移除）；
+当前**三个窗口（main / pet / taskbar）都不带附加参数**（曾加过 anti-throttling 参数，后证实无用且已移除）；
 `pet.rs` 的 `BROWSER_ARGS` 常量 + `browser_args_match_conf` 单测卡住这份一致性：
-要加参数两边必须同时加同一份。
+要加参数必须在**每一处建窗代码**里加同一份（宠物 `pet.rs`、任务栏挂件 `taskbar.rs`，
+后者由 `window_reuses_main_environment_and_browser_args` 单测卡住）。
 
 **② 共享同一个 `ICoreWebView2Environment`（官方推荐做法）。**
-`pet.rs` 的 `create_window` 会显式复用主窗口的环境
-（`get_main_environment` 用 `with_webview` 从主窗口拿环境，
-`WebviewWindowBuilder::with_environment` 传给宠物窗口），
-两个 WebView 共用同一浏览器进程。**改创建逻辑时这一行不能删。**
+`pet.rs` 的 `create_window`（以及任务栏挂件的 `taskbar::create_window`）会显式复用主窗口的环境
+（`shared_webview_environment` 用 `with_webview` 从主窗口拿环境，
+`WebviewWindowBuilder::with_environment` 传给第二个窗口），
+多个 WebView 共用同一浏览器进程。**改创建逻辑时这一行不能删。**
 
 宠物窗口的生命周期由 Rust 侧持有（`pet.rs` 的 `sync_window()`），与主窗口解耦
 （主窗口关到托盘不影响宠物）。实现要点：
@@ -434,6 +467,48 @@ python tools/verify_bridge_exit.py
 | 命令 | `get_pet_config` / `set_pet_config` / `get_pet_metrics` / `pet_heartbeat` / `pet_status` / `show_main_window` |
 | 前端 | `pet.html` + `src/pet.js` + `src/pet.css`（独立入口，**vite 多入口**，与主面板共用构建）                                         |
 | 权限 | `capabilities/default.json` 的 `windows` 需含 `pet`（当前窗口标签只在 Rust 侧创建）                                           |
+
+### 任务栏挂件的落点与看护
+
+挂件（`src-tauri/src/taskbar.rs`）与宠物同为「Rust 侧持有的第二个 WebView」，但**位置是算出来的**，
+不是拖出来的——所以 `taskbar.json` 里没有 `position`，页面也没有拖动区。三件事值得记牢：
+
+**① 落点算法是纯函数，全部按物理像素算（`stripe_of` + `dock_rect`，有单测）。**
+先用 `FindWindowW("Shell_TrayWnd")` 拿任务栏矩形，但**不能照搬它**：任务栏自动隐藏时它会整个滑到屏幕外，
+照搬就把挂件也甩出去（表现是「开关打开了但什么都看不见」）。所以只取它的**厚度**与**在哪条边**，
+再把条带重新贴到显示器边缘；随后右端（竖排时下端）锚在 `TrayNotifyWnd`（通知区域）左侧留 `gap`
+的位置——数字变宽时窗口往左长，右边沿不动，看着才像钉住的。拿不到通知区域时退回固定预留宽度。
+
+**② 位置 / 尺寸 / topmost 由看护线程每秒重算**（`spawn_watcher`），不靠页面定时器：
+窗口被全屏应用藏起来时 Chromium 会把页面定时器节流到分钟级，「藏了回不来」就成必然。
+线程在 `create_window` 时拉起、窗口销毁时自行结束。
+
+- 重顶 topmost 必须自己发 `SetWindowPos(HWND_TOPMOST, …SWP_NOACTIVATE)`：
+  tao 的 `set_always_on_top` 只在**标志位变化**时才发 `SetWindowPos`（`apply_diff` 里 diff 为空直接返回），
+  已经是 topmost 的窗口再调一次什么都不会发生；而任务栏被点一下就会盖到普通置顶窗口上面。
+- 「全屏」判定要求**贴满整块显示器且不是最大化窗口**（`covers_monitor`）：任务栏自动隐藏时，
+  最大化窗口同样铺满整块屏幕，只看矩形的话用户一最大化窗口挂件就消失了。
+
+**③ 宽度由页面量、后端设**（`taskbar_fit`）：多宽取决于勾了几个指标、数字有多长。
+Rust 侧只在建窗时给一个估算值（`estimate_logical_size`），落地后由页面量出的自然尺寸覆盖——
+在 Rust 里硬编码「每个指标占多少像素」会在换字体 / 改文案时全错。
+页面里 `.tb` 必须 `flex: 0 0 auto`（不能收缩）：被压窄就会量出偏小的宽度回给后端，
+窗口一直比内容小、数字被裁掉。
+
+| 部分 | 位置与说明 |
+| -- | -- |
+| 配置 | `taskbar.json`（`%LOCALAPPDATA%\PulseDeck\`），启动时由 Rust 读回；前端另存 `localStorage['pd.taskbarConfig']` |
+| 窗口 | `taskbar.rs`：`sync_window()` 按配置建 / 销毁；置顶、无边框、透明、不进任务栏、`focusable(false)`（不抢焦点） |
+| 读数 | 专用命令 `taskbar_tick`（读数 + 任务栏朝向 / 主题，顺带当心跳），不搬整份快照 |
+| 落点 | `stripe_of` / `dock_rect`（纯函数 + 单测）；`taskbar_fit` 收页面量出的尺寸；看护线程每秒重算 |
+| 主题 | 注册表 `SystemUsesLightTheme`（不是 `AppsUseLightTheme`——那管的是应用窗口）决定浅色 / 深色 |
+| 命令 | `get_taskbar_config` / `set_taskbar_config` / `taskbar_tick` / `taskbar_fit` / `taskbar_status` |
+| 前端 | `taskbar.html` + `src/taskbar.js` + `src/taskbar.css`（vite 第三个入口，与主面板共用构建） |
+| 权限 | `capabilities/default.json` 的 `windows` 需含 `taskbar` |
+
+`set_taskbar_config` 与 `set_pet_config` 一样**必须是 async 命令**：同步命令跑在主线程的 WebView2
+IPC 回调里，`WebviewWindowBuilder::build()` 在那里会死锁（机理见 `pet::sync_window` 的注释），
+`set_taskbar_config_is_async_command` 单测卡着。
 
 ### 宠物贴图管线
 
@@ -525,6 +600,18 @@ http://localhost:1420/pet.html?mock=1&pawnio=missing       # 温度不可用，�
 http://localhost:1420/pet.html?mock=1&pawnio=missing&nogpu=1  # 连 GPU 占用也读不到
 ```
 
+任务栏挂件同理（注意：浏览器里的挂件不会真的贴到任务栏上——
+落点 / 尺寸由 Rust 侧算，这里看的是「内容长什么样」，不校验位置）：
+
+```text
+http://localhost:1420/taskbar.html?mock=1                    # 默认（深色任务栏）：CPU / 内存 / 网络
+http://localhost:1420/taskbar.html?mock=1&theme=light        # 浅色任务栏配色
+http://localhost:1420/taskbar.html?mock=1&vertical=1         # 任务栏竖排（贴屏幕左右侧）时的列式布局
+```
+
+> 挂件在浏览器里是「一块贴着视口左上角的胶囊」——页面本身没有背景，
+> 深色背景下看更接近真机观感；`taskbar_fit` 在预览里是空实现（不会真的调窗口大小）。
+
 > 截图/预览要注意：`vite build` 会清空 `dist/`，之后必须**重启** `python -m http.server --directory dist`
 > ——服务进程的工作目录会跟着旧的 `dist` 一起失效，继续用会一律 404。
 
@@ -558,12 +645,13 @@ http://localhost:1420/pet.html?mock=1&pawnio=missing&nogpu=1  # 连 GPU 占用�
 ## 目录结构
 
 ```
-├─ index.html / pet.html        前端两个入口（主面板 / 桌面宠物）
-├─ vite.config.js               多入口构建（index + pet 共用一份产物）
+├─ index.html / pet.html / taskbar.html   前端三个入口（主面板 / 桌面宠物 / 任务栏挂件）
+├─ vite.config.js               多入口构建（index + pet + taskbar 共用一份产物）
 ├─ package.json
 ├─ src/                         前端（Vite）
 │  ├─ main.js                   主面板：轮询 + 渲染
 │  ├─ pet.js + pet.css          宠物页面
+│  ├─ taskbar.js + taskbar.css  任务栏挂件页面（尺寸量完回传后端）
 │  ├─ style.css
 │  ├─ modules/{format.js,charts.js}
 │  ├─ assets/pet/               抠底后的宠物贴图（打包用，6 档 × 8 帧）
@@ -587,6 +675,7 @@ http://localhost:1420/pet.html?mock=1&pawnio=missing&nogpu=1  # 连 GPU 占用�
 │     ├─ pawnio_setup.rs        PawnIO 探测（设备能否打开）+ 静默安装随包安装器
 │     ├─ msr_bridge.rs          提权子进程：读 MSR + 联想风扇，写 pawnio.json（主进程只读该文件）
 │     ├─ pet.rs                 宠物窗口生命周期（Rust 持有；BROWSER_ARGS 一致性单测在此）
+│     ├─ taskbar.rs             任务栏挂件：落点几何（纯函数）/ 看护线程 / 主题 / 读数
 │     ├─ battery.rs             电池读数整理
 │     ├─ win32.rs               Win32 薄封装（电源、内存提交量）
 │     └─ model.rs               与前端交换的数据模型
@@ -611,7 +700,13 @@ http://localhost:1420/pet.html?mock=1&pawnio=missing&nogpu=1  # 连 GPU 占用�
 - **笔记本 N 卡风扇普遍 `N/A`**（由 EC 控制，NVML 读不到），桌面 N 卡常有值；
 - 部分老平台 / 虚拟机没有 RAPL 能量计数器，CPU 封装功耗显示 `--`；
 - Windows 不公开适配器输出功率，「电源功率」只能给电池侧功率 + CPU 封装功耗；
-- 桌面宠物目前是固定一套机器人狐狸素材，暂不支持自定义形象。
+- 桌面宠物目前是固定一套机器人狐狸素材，暂不支持自定义形象；
+- **任务栏挂件只贴主显示器的任务栏**（`Shell_TrayWnd` 就在主显示器上）：
+  开了「在所有显示器上显示任务栏」时，副屏那几条任务栏上不会出现挂件；
+- 挂件的位置去 **通知区域左侧**，不占任务栏按钮区：勾了特别多指标（或屏幕很窄）时
+  会压住左边的任务栏按钮，此时建议少勾几项；
+- 任务栏开「自动隐藏」时挂件固定贴在屏幕底边（那里是任务栏弹出来的位置），
+  关掉自动隐藏才会重新回到通知区域左侧。
 
 ## 路线图
 

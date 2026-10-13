@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>任务栏显示</title>
+  </head>
+  <!--
+    任务栏挂件窗口：置顶、无边框、透明、不进任务栏、不抢焦点。
+    窗口位置与尺寸由 Rust 侧算（贴任务栏条带、停在通知区域左侧），页面只负责两件事：
+      1. 把勾选的指标画成一行（任务栏竖排时是一列）；
+      2. 量出自己的自然尺寸回传给后端（taskbar_fit）——挂件多宽完全由内容决定，
+         数字变宽时窗口往左长，右端（贴着通知区域的那边）不动。
+    单击整条挂件呼出主面板，见 src/taskbar.js。
+  -->
+  <body>
+    <div class="tb" id="tb" title="单击呼出主面板">
+      <div class="tb-items" id="tb-items"></div>
+    </div>
+
+    <!-- 开发预览替身：仅在 URL 带 ?mock=1 时生效 -->
+    <script src="/mock-preview.js"></script>
+    <script type="module" src="/src/taskbar.js"></script>
+  </body>
+</html>

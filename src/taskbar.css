@@ -1,0 +1,178 @@
+/*
+ * 任务栏挂件窗口样式。
+ *
+ * 窗口本身由后端建：置顶 / 无边框 / 透明 / 不进任务栏 / 不抢焦点，所以这里全程不给 body 上底色。
+ *
+ * 挂件是一条自带底色的圆角胶囊，而不是裸文字：任务栏的配色由系统主题决定
+ * （设置里的「Windows 模式」），裸文字总会在某一种主题上糊掉，自带底色就不依赖任务栏长什么样。
+ * 深色是默认（绝大多数壁纸 / 截图里的观感），浅色由 `.tb--light` 覆盖；
+ * 两者都由后端读注册表给出（见 taskbar.rs 的 taskbar_theme），这里只管画。
+ *
+ * ⚠ 不要给 .tb 写死宽高：它的自然尺寸就是「内容尺寸」，由页面量出来回传后端
+ * （taskbar_fit）去设窗口大小——写死会把量尺带偏，挂件要么被裁掉要么永远收不回来。
+ */
+
+:root {
+  --tb-text: #eaf0fb;
+  --tb-label: #97a6c0;
+  --tb-bg: rgba(18, 24, 38, 0.72);
+  --tb-border: rgba(255, 255, 255, 0.1);
+  --tb-warn: #f5c451;
+  --tb-hot: #ff7b6b;
+  --tb-rx: #3ddc84;
+  --tb-tx: #ffd166;
+}
+
+.tb--light {
+  --tb-text: #1b2130;
+  --tb-label: #5b6b86;
+  --tb-bg: rgba(252, 253, 255, 0.88);
+  --tb-border: rgba(15, 23, 42, 0.12);
+  --tb-warn: #b26b00;
+  --tb-hot: #cf2f3d;
+  --tb-rx: #0a8f4f;
+  --tb-tx: #9a6a00;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+  /* 挂件里没有可选内容，避免拖动时选中文字 */
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+}
+
+body {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: "Segoe UI", "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
+}
+
+/* ---------------- 挂件本体 ---------------- */
+
+.tb {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  /* ⚠ 不能收缩（flex 容器里的默认 shrink=1 会把挂件压窄）：
+   * taskbar_fit 量的是这一段的**自然尺寸**，被压窄了就会量出偏小的宽度回给后端，
+   * 于是窗口一直比内容小、数字被裁掉——调大指标的瞬间最容易触发。宁可溢出（由窗口自己放大）。 */
+  flex: 0 0 auto;
+  /* 比任务栏条带矮一截：贴边但不顶满，看着像嵌在任务栏里 */
+  min-height: 22px;
+  padding: 1px 9px;
+  border-radius: 6px;
+  border: 1px solid var(--tb-border);
+  background: var(--tb-bg);
+  color: var(--tb-text);
+  font-size: 12px;
+  line-height: 16px;
+  /* 等宽数字：速率跳字时宽度不抖，挂件就不会跟着一分钟晃好几次 */
+  font-variant-numeric: tabular-nums;
+  /* 首拍（主题 / 指标就位）之前不画：窗口是建出来就可见的，先画再改会闪一下 */
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.tb.is-ready {
+  opacity: 1;
+}
+
+.tb-items {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.tb-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+/* 档位缺失（无 GPU / 无电池 / 温度读不到）时整项压暗，仍然显示 `--` */
+.tb-item.is-missing {
+  opacity: 0.55;
+}
+
+.tb-k {
+  font-style: normal;
+  color: var(--tb-label);
+}
+
+.tb-v {
+  font-weight: 600;
+  /* 定宽：数字位数变化时不重排、不带着窗口一起伸缩 */
+  min-width: 36px;
+  text-align: right;
+}
+
+/* 速率类：下行 / 上行 / 磁盘读写，各自定宽，箭头与颜色沿用监控页的习惯 */
+.tb-rx,
+.tb-tx,
+.tb-io {
+  font-weight: 600;
+  min-width: 58px;
+}
+
+.tb-rx {
+  color: var(--tb-rx);
+}
+
+.tb-tx {
+  color: var(--tb-tx);
+}
+
+.tb-io {
+  color: var(--tb-text);
+}
+
+/* 占用偏高 / 温度偏高：沿用监控页的配色（60% 起黄、85% 起红；温度 74 / 84℃ 两档） */
+.tb-item.is-warn .tb-v {
+  color: var(--tb-warn);
+}
+
+.tb-item.is-hot .tb-v {
+  color: var(--tb-hot);
+}
+
+/* ---------------- 竖排任务栏（贴在屏幕左右侧，Win10 才有） ---------------- */
+
+/* 那一竖条只有 40~60px 宽：内边距收到 3px、字号小一档，数值区不再定宽
+ * （紧凑格式由 taskbar.js 负责——`↓1.24MB/s` 在这里必然被裁掉，竖排时渲染成 `↓1.2M`） */
+.tb--vertical {
+  padding: 1px 3px;
+}
+
+.tb--vertical .tb-items {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+}
+
+.tb--vertical .tb-item {
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+}
+
+.tb--vertical .tb-k {
+  font-size: 8px;
+  line-height: 10px;
+}
+
+.tb--vertical .tb-v,
+.tb--vertical .tb-rx,
+.tb--vertical .tb-tx,
+.tb--vertical .tb-io {
+  min-width: 0;
+  font-size: 10px;
+  line-height: 12px;
+  text-align: center;
+}

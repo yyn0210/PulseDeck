@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "默认权限：主窗口与桌面宠物窗口调用本地采集命令",
-  "windows": ["main", "pet"],
+  "description": "默认权限：主窗口、桌面宠物与任务栏挂件窗口调用本地采集命令",
+  "windows": ["main", "pet", "taskbar"],
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",

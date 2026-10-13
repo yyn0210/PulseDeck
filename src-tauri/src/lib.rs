@@ -16,6 +16,7 @@ mod pawnio_setup;
 mod pdh;
 mod pet;
 mod sampler;
+mod taskbar;
 mod thermal;
 mod vendor;
 mod win32;
@@ -36,6 +37,8 @@ pub struct AppState {
     bridge_prompted: Arc<AtomicBool>,
     /// 桌面宠物的配置（窗口是否存在的依据，落盘在 pet.json）
     pet: pet::PetStore,
+    /// 任务栏挂件的配置（窗口是否存在的依据，落盘在 taskbar.json）
+    taskbar: taskbar::TaskbarStore,
     /// 风扇的用户手动指定（落盘在 fan.json）。**必须与采样线程共用同一份**，
     /// 否则设置页改了而采样读的是启动时那份。
     fan_pref: fan_pref::FanPrefStore,
@@ -152,6 +155,51 @@ fn show_main_window(app: tauri::AppHandle) {
         let _ = w.show();
         let _ = w.set_focus();
     }
+}
+
+/* ---------------- 任务栏显示 ---------------- */
+
+/// 当前任务栏挂件配置（设置页据此回显）
+#[tauri::command]
+fn get_taskbar_config(state: State<'_, AppState>) -> taskbar::TaskbarConfig {
+    state.taskbar.get()
+}
+
+/// 保存挂件配置并同步窗口（开就建、关就销毁）。
+///
+/// 返回清洗后的配置——非法指标会被剔除、至少保留一项，前端直接用返回值回显。
+///
+/// ⚠⚠ **`async` 是硬性要求，不要改回同步命令**：同步命令跑在主线程的 WebView2 IPC 回调里，
+/// `WebviewWindowBuilder::build()` 在那里会死锁（机理见本文件 `set_pet_config` 的注释）。
+#[tauri::command]
+async fn set_taskbar_config(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    config: taskbar::TaskbarConfig,
+) -> Result<taskbar::TaskbarConfig, String> {
+    let cfg = state.taskbar.set(config);
+    taskbar::sync_window(&app, &cfg).map_err(|e| format!("打开/关闭任务栏显示失败：{e}"))?;
+    Ok(cfg)
+}
+
+/// 挂件每秒一问：读数 + 任务栏朝向 / 主题（顺带记心跳）。
+///
+/// 位置的跟随不靠这条命令——那是看护线程的活（窗口被全屏应用藏起来时页面会被节流）。
+#[tauri::command]
+fn taskbar_tick(app: tauri::AppHandle, state: State<'_, AppState>) -> taskbar::TaskbarTick {
+    taskbar::tick(&app, &state.sampler.latest())
+}
+
+/// 挂件页面把量出来的内容尺寸回传，后端据此调整窗口大小与落点
+#[tauri::command]
+fn taskbar_fit(app: tauri::AppHandle, width: f64, height: f64) {
+    let _ = taskbar::fit(&app, width, height);
+}
+
+/// 挂件窗口的就绪状态：是否开着、页面心跳是否新鲜、是否正被全屏应用挡着藏起来
+#[tauri::command]
+fn taskbar_status(app: tauri::AppHandle) -> serde_json::Value {
+    taskbar::status(&app)
 }
 
 /// 是否已写进开机自启
@@ -481,6 +529,9 @@ pub fn run() {
     // 宠物配置从磁盘恢复：上次开着这次就直接出现在桌面上，不必等主窗口推配置过来
     let pet = pet::PetStore::load();
     let pet_at_startup = pet.get();
+    // 任务栏挂件同理：配置里开着就在启动时贴回任务栏
+    let taskbar = taskbar::TaskbarStore::load();
+    let taskbar_at_startup = taskbar.get();
 
     {
         let sampler = sampler.clone();
@@ -541,6 +592,7 @@ pub fn run() {
             close_to_tray,
             bridge_prompted: bridge_prompted.clone(),
             pet,
+            taskbar,
             fan_pref,
         })
         .invoke_handler(tauri::generate_handler![
@@ -562,6 +614,11 @@ pub fn run() {
             get_pet_metrics,
             pet_heartbeat,
             pet_status,
+            get_taskbar_config,
+            set_taskbar_config,
+            taskbar_tick,
+            taskbar_fit,
+            taskbar_status,
             show_main_window
         ])
         .setup({
@@ -569,9 +626,9 @@ pub fn run() {
             move |app| {
                 build_tray(app.handle())?;
 
-                // 先把主窗口的 WebView2 环境缓存下来：宠物窗口必须复用它，
+                // 先把主窗口的 WebView2 环境缓存下来：宠物 / 任务栏挂件两个窗口都必须复用它，
                 // 而 `with_webview` 只在主线程同步有效——这里（setup）正好是主线程。
-                // 放在建宠物窗口**之前**：之后建窗口的动作都在非主线程上，现取是取不到的。
+                // 放在建窗口**之前**：之后建窗口的动作都在非主线程上，现取是取不到的。
                 pet::capture_main_environment(app.handle());
 
                 // 恢复桌面宠物窗口（配置里 enabled=true 时才建）。
@@ -581,6 +638,13 @@ pub fn run() {
                 if pet_at_startup.enabled {
                     if let Err(e) = pet::sync_window(&app.handle(), &pet_at_startup) {
                         eprintln!("恢复桌面宠物失败：{e}");
+                    }
+                }
+
+                // 恢复任务栏挂件（同样按配置决定要不要建）
+                if taskbar_at_startup.enabled {
+                    if let Err(e) = taskbar::sync_window(&app.handle(), &taskbar_at_startup) {
+                        eprintln!("恢复任务栏显示失败：{e}");
                     }
                 }
 

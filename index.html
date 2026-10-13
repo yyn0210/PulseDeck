@@ -410,6 +410,71 @@
             </div>
           </section>
 
+          <!-- 任务栏显示 -->
+          <section class="card">
+            <header class="card-head">
+              <h2>任务栏显示</h2>
+              <span class="tag" id="taskbar-tag">已关闭</span>
+            </header>
+            <p class="setting-desc">
+              在任务栏上贴一条细挂件，实时显示勾选的指标：默认停在通知区域（托盘图标 / 时钟）左侧，
+              置顶且不抢焦点——Alt+Tab 与任务栏里都不会多出它。整条挂件单击呼出主面板；
+              有全屏应用（游戏 / 全屏视频）时会自动藏起来，退出全屏就回来。
+              任务栏挪到屏幕上下左右哪条边都跟着走；开了「自动隐藏」时挂在屏幕底边（任务栏弹出来的那一处）。
+            </p>
+            <div class="settings-grid">
+              <label class="switch-row">
+                <span class="switch-text">
+                  <b>启用任务栏显示</b>
+                  <small>关闭后挂件立即消失；主面板最小化到托盘时挂件依然贴着任务栏</small>
+                </span>
+                <input type="checkbox" id="opt-taskbar" />
+                <i class="switch" aria-hidden="true"></i>
+              </label>
+              <div class="adv-item idle" id="taskbar-status">
+                <i class="adv-dot" aria-hidden="true"></i>
+                <span class="adv-text">
+                  <b>任务栏挂件</b>
+                  <small id="taskbar-status-text">已关闭</small>
+                </span>
+              </div>
+            </div>
+            <div class="setting-rows pet-rows-setting">
+              <div class="setting-row">
+                <span class="setting-text">
+                  <b>显示内容</b>
+                  <small>按勾选顺序排列，至少保留一项；宽度跟着内容走，数字变宽时往左长</small>
+                </span>
+                <div class="chip-group" id="taskbar-metrics">
+                  <label class="chip">
+                    <input type="checkbox" value="cpu" /><span>CPU 占用</span>
+                  </label>
+                  <label class="chip">
+                    <input type="checkbox" value="mem" /><span>内存占用</span>
+                  </label>
+                  <label class="chip">
+                    <input type="checkbox" value="gpu" /><span>GPU 占用</span>
+                  </label>
+                  <label class="chip">
+                    <input type="checkbox" value="net" /><span>网络速率</span>
+                  </label>
+                  <label class="chip">
+                    <input type="checkbox" value="disk" /><span>磁盘读写</span>
+                  </label>
+                  <label class="chip">
+                    <input type="checkbox" value="bat" /><span>电池电量</span>
+                  </label>
+                  <label class="chip">
+                    <input type="checkbox" value="temp" /><span>CPU 温度</span>
+                  </label>
+                  <label class="chip">
+                    <input type="checkbox" value="power" /><span>功率</span>
+                  </label>
+                </div>
+              </div>
+            </div>
+          </section>
+
           <!-- 高级采集 -->
           <section class="card">
             <header class="card-head">

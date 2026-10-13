@@ -22,10 +22,12 @@ export default defineConfig({
     minify: !process.env.TAURI_ENV_DEBUG ? "esbuild" : false,
     sourcemap: !!process.env.TAURI_ENV_DEBUG,
     rollupOptions: {
-      // 两个入口：主面板 index.html 与桌面宠物窗口 pet.html（后者由 Rust 侧按需创建）
+      // 三个入口：主面板 index.html、桌面宠物 pet.html、任务栏挂件 taskbar.html
+      // （后两个窗口都由 Rust 侧按需创建）
       input: {
         main: resolve(rootDir, "index.html"),
         pet: resolve(rootDir, "pet.html"),
+        taskbar: resolve(rootDir, "taskbar.html"),
       },
     },
   },

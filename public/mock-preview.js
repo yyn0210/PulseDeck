@@ -228,6 +228,11 @@
   const settings = { autostart: false, closeToTray: true };
   // 桌面宠物：预览模式下不真的开窗，只把配置存起来，供 pet.html?mock=1 读取
   let petConfig = { enabled: false, metrics: ["cpu", "mem", "gpu"], opacity: 1 };
+  // 任务栏挂件：同上，供 taskbar.html?mock=1 读取。
+  // `?mock=1&theme=light` 预览浅色任务栏、`?mock=1&vertical=1` 预览竖排任务栏（贴屏幕左右侧）
+  let taskbarConfig = { enabled: false, metrics: ["cpu", "mem", "net"] };
+  const taskbarTheme = params.get("theme") === "light" ? "light" : "dark";
+  const taskbarVertical = params.get("vertical") === "1";
   // 风扇号手动指定：null = 自动（与后端 FanPref 同构，越界的号会被清洗成 null）
   let fanPrefCpuId = null;
 
@@ -326,6 +331,46 @@
             windowOpen: petConfig.enabled,
             heartbeatAgeMs: petConfig.enabled ? 400 : null,
             alive: petConfig.enabled,
+          });
+        case "get_taskbar_config":
+          return Promise.resolve(taskbarConfig);
+        case "set_taskbar_config": {
+          const next = Object.assign({}, taskbarConfig, args.config || {});
+          // 复刻后端的清洗规则：过滤非法指标、至少保留一项
+          const keys = ["cpu", "mem", "gpu", "net", "disk", "bat", "temp", "power"];
+          next.metrics = (next.metrics || []).filter((m) => keys.includes(m));
+          if (!next.metrics.length) next.metrics = ["cpu"];
+          taskbarConfig = next;
+          return Promise.resolve(taskbarConfig);
+        }
+        case "taskbar_tick": {
+          const s = snapshot();
+          return Promise.resolve({
+            metrics: {
+              cpuPct: s.cpu.usageTotal,
+              memPct: s.memory.usagePct,
+              gpuPct: noGpu ? null : s.gpu.usagePct,
+              netRxBps: s.net.rxBytesPerSec,
+              netTxBps: s.net.txBytesPerSec,
+              diskReadBps: s.disks.reduce((a, d) => a + d.readBytesPerSec, 0),
+              diskWriteBps: s.disks.reduce((a, d) => a + d.writeBytesPerSec, 0),
+              batPct: s.battery.hasBattery ? s.battery.percent : null,
+              cpuTempC: s.thermal.cpuTempC,
+              // 与后端同构：电池功率优先，没充没放时退回 CPU 封装功耗
+              powerW: s.battery.chargeRateW || s.battery.dischargeRateW || s.thermal.cpuPowerW,
+            },
+            vertical: taskbarVertical,
+            theme: taskbarTheme,
+          });
+        }
+        case "taskbar_fit":
+          return Promise.resolve(null);
+        case "taskbar_status":
+          return Promise.resolve({
+            windowOpen: taskbarConfig.enabled,
+            heartbeatAgeMs: taskbarConfig.enabled ? 300 : null,
+            alive: taskbarConfig.enabled,
+            hiddenFullscreen: false,
           });
         case "show_main_window":
           return Promise.resolve(null);
