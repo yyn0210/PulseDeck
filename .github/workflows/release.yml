@@ -69,6 +69,19 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: '脉盘 PulseDeck ${{ github.ref_name }}'
-          releaseBody: 'Windows x64 安装包（NSIS）。下载 PulseDeck_x64-setup.exe 安装即可；读取 CPU 温度/风扇转速需在设置页启用「高级采集」（管理员桥接）。'
+          releaseBody: |
+            Windows x64 安装包（NSIS）：下载 `PulseDeck_0.2.0_x64-setup.exe` 双击安装即可，
+            无需联网、无需管理员权限。
+
+            ## 本版更新（${{ github.ref_name }}）
+
+            - **新增「任务栏显示」**：设置页开启后，任务栏上多出一条细挂件，默认停在通知区域（托盘图标 / 时钟）左侧，
+              可勾选 CPU / 内存 / GPU / 网络 / 磁盘 / 电池 / 温度 / 功率；跟随任务栏的四条边、厚度、DPI 与深浅色主题，
+              全屏应用在前台时自动隐藏，不抢焦点、不进 Alt+Tab，单击挂件可呼出主面板。
+            - **桌面宠物记住位置**：拖动后的落点会写入配置，下次启动在原位恢复；配置保存不再覆盖已存坐标。
+            - **单实例运行**：重复启动不再出现第二个实例（及第二只宠物 / 两个托盘图标），而是把已运行的面板拉到前台。
+
+            读取 CPU 温度最准的 MSR 通道与联想风扇转速需要管理员桥接（PawnIO 驱动，随包分发、绝不静默安装），
+            入口在设置页「高级采集」；不启用也能正常使用，温度会回退到 ACPI / PDH 通道。
           releaseDraft: false
           prerelease: false

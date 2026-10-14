@@ -1,6 +1,6 @@
 [package]
 name = "pulse-deck"
-version = "0.1.0"
+version = "0.2.0"
 description = "Windows 系统监控小工具（CPU / 内存 / 硬盘 / 电池 / 充电功率 / GPU / 网络 / 温度）"
 edition = "2021"
 
