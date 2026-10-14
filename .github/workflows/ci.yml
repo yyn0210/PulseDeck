@@ -4,9 +4,10 @@
 # （tauri CLI 会追加 custom-protocol feature），绝不能在 CI 里裸 `cargo build --release`
 # （会产出请求 devUrl 的白屏 exe）。
 #
-# Ubuntu job 只做 `cargo check`：指标读取已按 platform/ trait 抽象 + 全 crate
-# cfg(windows) 分区（2026-10-14），非 Windows 路径（占位实现 + cfg 剔除后的命令
-# 注册/装配）靠这个 job 持续验证不腐烂。不做测试、不打包。
+# Ubuntu job 跑完整 `cargo test`：指标读取已按 platform/ trait 抽象 + 全 crate
+# cfg(windows) 分区（2026-10-14），Linux 采集源（hwmon / sysfs / procfs）在 runner
+# 真机上被实际执行；`cargo test` 编译 lib 时会加载并校验 tauri.linux.conf.json 的
+# 合并结果。打包（deb / AppImage）只在 Release workflow 里做。
 
 name: CI
 

@@ -7,7 +7,7 @@
 *A lightweight desktop system monitor with a temperature-reactive desktop pet.*
 
 [![License](https://img.shields.io/badge/License-Apache--2.0-blue)](LICENSE)
-[![Platform](https://img.shields.io/badge/Platform-Windows%2010%2B%20x64-0078D6?logo=windows11)](#下载与安装)
+[![Platform](https://img.shields.io/badge/Platform-Windows%2010%2B%20x64%20%7C%20Linux%20x64-0078D6)](#下载与安装)
 [![Tauri](https://img.shields.io/badge/Tauri-2.x-FFC131?logo=tauri&logoColor=black)](https://tauri.app)
 [![Release](https://img.shields.io/github/v/release/yyn0210/PulseDeck?display_name=tag&include_prereleases)](https://github.com/yyn0210/PulseDeck/releases)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen)](#参与贡献)
@@ -57,7 +57,7 @@
   **形象随 CPU 温度 6 档切换**（38 蓝 → 94 红），过热档还会加速喘气
 - **任务栏显示**：把 CPU / 内存 / GPU / 网络 / 磁盘 / 电池 / 温度 / 功率贴在 Windows 任务栏上的一条
   细挂件里（任务栏显示模式）：停在通知区域（托盘图标 / 时钟）左侧、不抢焦点、不进 Alt+Tab，
-  全屏游戏 / 视频时自动隐藏
+  全屏游戏 / 视频时自动隐藏（Linux 上为贴屏幕右下角的置顶边条，见支持矩阵）
 - **托盘常驻**：关窗不退出，后台继续采样；支持开机自启、暂停刷新
 - **轻量原生**：Tauri 2 打包，无 Electron、无第三方图表库，canvas 手绘所有图表
 - **隐私友好**：全部采集本地完成，无任何上传 / 遥测
@@ -94,6 +94,8 @@
 
 ### 系统要求
 
+**Windows**
+
 | 项 | 要求 |
 | -- | -- |
 | 操作系统 | **Windows 10 x64（build 17763 / 1809）及以上**（也是随包分发 PawnIO 驱动的前置条件） |
@@ -101,13 +103,38 @@
 | WebView2 | 需要运行时（Windows 11 一般已内置；安装包缺失时会引导安装） |
 | 权限 | 普通用户权限即可运行；CPU 温度 / 风扇等高级采集需管理员（按需授权一次） |
 
+**Linux**
+
+| 项 | 要求 |
+| -- | -- |
+| 操作系统 | x86_64 桌面发行版（deb 系用 `.deb`；其他发行版用 `.AppImage`） |
+| 架构 | 仅 x86_64 |
+| WebView | webkit2gtk 4.1（`.deb` 已声明依赖，安装时自动带上；AppImage 自带） |
+| 桌面环境 | X11 或 Wayland；托盘图标需要应用指示器支持（GNOME 需装 AppIndicator 扩展） |
+| 权限 | 普通用户即可；CPU 温度 / 风扇走内核 hwmon，**无需任何提权** |
+
 ### 安装
+
+**Windows**
 
 1. 打开 [Releases](https://github.com/yyn0210/PulseDeck/releases) 页面；
 2. 下载最新版 NSIS 安装包（`PulseDeck_x.y.z_x64-setup.exe`）并双击安装；
 3. 启动后即可使用，**无需联网、无需管理员**。
 
-**关于高级采集（可选）**：CPU 温度最准的路径（读 MSR）与联想风扇转速需要内核驱动 PawnIO。
+**Linux**
+
+1. 打开 [Releases](https://github.com/yyn0210/PulseDeck/releases) 页面；
+2. deb 系发行版（Debian / Ubuntu / Deepin / UOS 等）下载 `PulseDeck_x.y.z_amd64.deb`，
+   执行 `sudo apt install ./PulseDeck_x.y.z_amd64.deb`；
+3. 其他发行版下载 `PulseDeck_x.y.z_amd64.AppImage`，`chmod +x` 后直接运行
+   （部分发行版需要 `libfuse2`）。
+
+Linux 上**不需要 PawnIO**：CPU 温度 / 风扇 / 电池 / 已提交内存分别走内核 hwmon、
+`/sys/class/power_supply` 与 `/proc/meminfo`，普通权限直读（见
+[平台抽象层与支持矩阵](#平台抽象层与支持矩阵)），设置页也不会出现 Windows 的
+「高级采集」区块。
+
+**关于高级采集（可选，仅 Windows）**：CPU 温度最准的路径（读 MSR）与联想风扇转速需要内核驱动 PawnIO。
 本工具**绝不静默安装**——未安装时只是顶部多一条可关闭的提醒，安装入口在
 **设置 → 高级采集**，点按钮确认一次 UAC 即可（安装器随包分发，全程离线可用）。
 不装也能正常使用，温度会回退到 ACPI / PDH 通道。详见
@@ -118,7 +145,7 @@
 - **托盘与自启**：
   - 关闭主窗口默认**隐藏到托盘**，后台采样线程继续运行；托盘菜单选「退出」才真正结束；
   - 左键单击托盘图标呼出面板，右键展开菜单；
-  - 托盘菜单提供：显示面板、暂停刷新、开机自启（勾选即写入注册表 Run 项）、退出；
+  - 托盘菜单提供：显示面板、暂停刷新、开机自启（Windows 写注册表 Run 项，Linux 写 `~/.config/autostart`）、退出；
   - 设置页「常规」可以关闭「关闭时最小化到托盘」，让关闭按钮直接退出。
 - **顶部提示条**：未安装 PawnIO 时，监控页顶部会出现一条可关闭的提醒（`#tipbar`），
   点「去设置」直接跳到设置页「高级采集」；点「×」后由用户选 **「永久关闭」**（写入
@@ -173,7 +200,8 @@
   explorer 重启（`Shell_TrayWnd` 换句柄）、切浅色 / 深色主题，挂件都会在一秒内跟过去。
   浅色任务栏用深色文字、深色任务栏用浅色文字（读的是注册表里的「Windows 模式」）。
 - 开了**任务栏自动隐藏**时，挂件贴在屏幕底边——那一处正是任务栏弹出来的位置（任务栏滑走了，挂件仍然可见）。
-- 配置落 `%LOCALAPPDATA%\PulseDeck\taskbar.json`，设置页另外缓存一份在
+- 配置落应用数据目录（Windows：`%LOCALAPPDATA%\PulseDeck\taskbar.json`；
+  Linux：`~/.config/pulsedeck/taskbar.json`），设置页另外缓存一份在
   `localStorage['pd.taskbarConfig']`（与桌面宠物同一套双写规则）。
 
 ## 数据来源与降级策略
@@ -387,11 +415,23 @@ Usage: PawnIOSetup.exe [-install] [-uninstall] [-unrestricted] [-debuginfo] [-si
 
 ### 环境要求
 
-- [Rust](https://rustup.rs)（stable，`x86_64-pc-windows-msvc` 目标）
+公共：
+
+- [Rust](https://rustup.rs)（stable）
 - [Node.js](https://nodejs.org) ≥ 20.19（Vite 7 的要求）与 npm
-- VS2022 的 MSVC 工具链（cl.exe / link.exe，Rust msvc 目标依赖）
-- WebView2 运行时（开发机一般已有）
 - Python 3.11 + Pillow / numpy / scipy —— 仅**改宠物贴图**时需要（见[宠物贴图管线](#宠物贴图管线)）
+
+Windows：
+
+- `x86_64-pc-windows-msvc` 目标 + VS2022 的 MSVC 工具链（cl.exe / link.exe）
+- WebView2 运行时（开发机一般已有）
+
+Linux（deb 系示例）：
+
+```bash
+sudo apt install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
+  libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+```
 
 ### 构建命令
 
@@ -400,12 +440,19 @@ git clone https://github.com/yyn0210/PulseDeck.git
 cd PulseDeck
 npm ci             # 按 package-lock.json 精确安装（改过 package.json 依赖后改用 npm install 刷新锁文件）
 npm run dev        # 开发模式（Vite dev server :1420 + Tauri 窗口；期间保持 Vite 存活）
-npm run build      # 完整打包：前端 + exe + NSIS 安装包
-npm run build:exe  # 只出 exe（src-tauri/target/release/pulse-deck.exe），跳过 NSIS
+npm run build      # 完整打包：前端 + 二进制 + 当前平台的安装包
+npm run build:exe  # 只出二进制（跳过安装包）
 ```
 
-Release 产物：`src-tauri/target/release/pulse-deck.exe`，
-NSIS 安装包：`src-tauri/target/release/bundle/nsis/*.exe`。
+打包目标按平台拆在 `tauri.windows.conf.json`（NSIS + PawnIO 随包资源）与
+`tauri.linux.conf.json`（deb + AppImage，不带 Windows 专属资源）里，构建时自动合并。
+
+产物位置：
+
+| 平台 | 二进制 | 安装包 |
+| -- | -- | -- |
+| Windows | `src-tauri/target/release/pulse-deck.exe` | `src-tauri/target/release/bundle/nsis/*.exe` |
+| Linux | `src-tauri/target/release/pulse-deck` | `src-tauri/target/release/bundle/deb/*.deb`、`bundle/appimage/*.AppImage` |
 
 ### ⚠️ 不要直接 `cargo build --release`
 
@@ -443,6 +490,10 @@ cargo test -p pulse-deck diag::pawnio_setup  -- --nocapture   # PawnIO 是否已
 ```
 
 WMI 逐步 HRESULT 日志：`WB_WMI_DIAG=1 cargo test -p pulse-deck diag::wmi -- --nocapture`
+
+> `diag::*` 用例直连 Windows 原生数据源（PDH / WMI / PawnIO），随平台一起 `cfg` 门控，
+> **只在 Windows 上编译**；`smoke::collect_once` 两平台通用。Linux 上排查采集问题时
+> 用它打完整快照，hwmon 细节可用 `sensors` 命令对照。
 
 ### 桥接进程会不会留成孤儿
 
@@ -703,6 +754,8 @@ http://localhost:1420/taskbar.html?mock=1&vertical=1         # 任务栏竖排�
 │     ├─ main.rs                二进制入口
 │     ├─ lib.rs                 Tauri 装配 + 托盘 + 采样线程 + 命令（含 diag/smoke 测试）
 │     ├─ sampler.rs             采样编排（CPU/内存/磁盘/网络/进程/GPU/温度；TOP_N 控制进程榜长度）
+│     ├─ platform/              跨平台采集抽象：windows.rs / linux.rs / unsupported.rs
+│     │                         （按编译目标分派的 5 个 trait 实现）+ linux_parse.rs（纯函数与单测）
 │     ├─ gpu.rs                 GPU：NVML 优先，PDH 兜底
 │     ├─ fan.rs                 风扇转速：厂商私有(联想) → NVML → LHM/OHM WMI → ACPI，读不到就诚实降级
 │     ├─ vendor.rs              厂商私有通道的调度与结果挑选（读取桥接产出的 JSON）
@@ -731,7 +784,9 @@ http://localhost:1420/taskbar.html?mock=1&vertical=1         # 任务栏竖排�
 
 ## 已知限制
 
-- **仅支持 Windows x64**，暂无 macOS / Linux 计划（大量数据源是 Win32 / WMI / PDH 专有）；
+- **支持 Windows x64 与 Linux x64**（安装包见[下载与安装](#下载与安装)）；macOS 暂无计划——
+  温度 / 风扇 / 电池功率等高级指标需要 IOKit / SMC，得有 Mac 才能开发验证；
+  两平台各自的采集通道差异见[平台抽象层与支持矩阵](#平台抽象层与支持矩阵)；
 - **AMD 平台暂不支持 MSR 直读**：CPU 温度回退 ACPI 热区 / PDH，能否读到取决于固件；
 - **非联想机型的 CPU 风扇读不到**：风扇挂在主板 Super I/O / EC 上，通用接口不存在；
   为什么不引入 lhm-service / Super I/O 直读，见 `docs/风扇转速方案评估.md`；
