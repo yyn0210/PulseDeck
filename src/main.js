@@ -719,8 +719,19 @@ function renderDisks(disks) {
   setText("disk-tag", `${disks.length} 个卷`);
 }
 
-function procRows(rows, highlight) {
+/**
+ * 进程表格行。两榜的列序不同——排序依据那一列在前（CPU 榜「CPU、内存」，
+ * 内存榜「内存、CPU」），index.html 里的表头就是这么写的，这里必须同序输出，
+ * 否则数值会跟表头错位；排序列加 `.lead` 提亮。
+ */
+function procRows(rows, sortKey) {
   if (!rows.length) return `<tr><td colspan="5">暂无数据</td></tr>`;
+  const cells = {
+    cpuUsage: (p, lead) => `<td class="${lead ? "lead" : ""}">${p.cpuUsage.toFixed(1)}%</td>`,
+    memoryBytes: (p, lead) =>
+      `<td class="${lead ? "lead" : ""}">${fmtBytes(p.memoryBytes)}</td>`,
+  };
+  const otherKey = sortKey === "cpuUsage" ? "memoryBytes" : "cpuUsage";
   return rows
     .map(
       (p, i) => `
@@ -728,8 +739,8 @@ function procRows(rows, highlight) {
         <td>${i + 1}</td>
         <td class="pname">${esc(p.name)}</td>
         <td>${p.pid}</td>
-        <td class="${highlight === "cpuUsage" ? "lead" : ""}">${p.cpuUsage.toFixed(1)}%</td>
-        <td class="${highlight === "memoryBytes" ? "lead" : ""}">${fmtBytes(p.memoryBytes)}</td>
+        ${cells[sortKey](p, true)}
+        ${cells[otherKey](p, false)}
       </tr>`,
     )
     .join("");
