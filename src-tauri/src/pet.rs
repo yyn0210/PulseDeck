@@ -3,12 +3,19 @@
 //! 设计要点：
 //! * **窗口由 Rust 管**：设置页只负责改配置（`set_pet_config`），窗口的创建/销毁发生在这里，
 //!   因此「最小化到托盘」时宠物依然在桌面上，也不需要前端持有窗口句柄。
-//! * **配置落盘**：`%LOCALAPPDATA%\PulseDeck\pet.json`，下次启动自动恢复（不依赖主窗口先起来）。
+//! * **配置落盘**：应用数据目录（见 `app_dir()`）下的 `pet.json`，下次启动自动恢复
+//!   （不依赖主窗口先起来）。
 //! * **读数走专用命令**：宠物窗口只需要 3~4 个数，不值得每拍搬一整份 `Snapshot`
 //!   （里面还有进程榜与磁盘列表），所以单独给一个 `pet_metrics`。
+//!
+//! 跨平台：窗口生命周期、配置、位置持久化、心跳全部是 tauri 通用 API，
+//! 三平台一致；只有「复用主窗口 WebView2 环境」是 Windows 专属机制（见下方注释），
+//! 其余平台建窗即独立环境，无需处理。
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard};
+#[cfg(windows)]
+use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
@@ -52,6 +59,9 @@ pub const METRIC_KEYS: [&str; 3] = ["cpu", "mem", "gpu"];
 ///
 /// 如果未来确实需要附加参数：主窗口（`tauri.conf.json` 的 `additionalBrowserArgs`）
 /// 与宠物窗口（本常量）必须逐字符一致，由 `browser_args_match_conf` 单测卡住。
+///
+/// 非 Windows 上 `additional_browser_args` 不是 tauri 的 API，本常量只有测试在用。
+#[cfg_attr(not(windows), allow(dead_code))]
 pub const BROWSER_ARGS: &str = "";
 
 /* ------------------------------ 配置 ------------------------------ */
@@ -343,7 +353,8 @@ pub fn capture_main_environment(app: &tauri::AppHandle) {
 ///
 /// 每个「第二个 WebView」窗口都必须复用主窗口的环境（同一个浏览器进程、同一份用户数据目录），
 /// 否则 WebView2 会以 `HRESULT(0x8007139F)` 静默建不出来——桌面表现就是
-/// 「开关打开了但什么都不出现」，且没有任何提示。
+/// 「开关打开了但什么都不出现」，且没有任何提示。仅 Windows 有这层机制。
+#[cfg(windows)]
 pub fn shared_webview_environment(
     app: &tauri::AppHandle,
 ) -> Option<webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Environment> {
@@ -408,6 +419,11 @@ fn create_window(app: &tauri::AppHandle, config: &PetConfig) -> tauri::Result<()
     let url = WebviewUrl::App("pet.html".into());
     plog(format!("create_window url={url:?} size={WIN_W}x{WIN_H} at ({x},{y})"));
 
+    let mut builder = WebviewWindowBuilder::new(app, WINDOW_LABEL, url)
+        .title("桌面宠物")
+        .inner_size(WIN_W, WIN_H)
+        .position(x, y);
+
     // Windows 上多个 WebView 共享同一个 ICoreWebView2Environment（官方推荐做法：
     // 同一浏览器进程、同一数据目录，避免环境选项不一致之类的隐性冲突）。
     //
@@ -417,20 +433,21 @@ fn create_window(app: &tauri::AppHandle, config: &PetConfig) -> tauri::Result<()
     // 所以这里用 `unsafe impl Send` 绕过类型约束是安全的——回调根本不会跨线程。
     // 环境取**缓存**的那份，不要在这里现取：本函数可能不在主线程上跑
     // （见 sync_window 的注释），那时 `with_webview` 是拿不到环境的。
-    let environment = main_environment(app);
-    if environment.is_some() {
-        plog("复用主窗口的 WebView2 环境");
-    } else {
-        plog("⚠ 没有主窗口环境，宠物窗口将使用独立环境（多半会以 0x8007139F 建不出来）");
+    //
+    // Linux（webkit2gtk）/ macOS（WKWebView）没有这层环境共享机制，跳过整块逻辑。
+    #[cfg(windows)]
+    {
+        let environment = main_environment(app);
+        if environment.is_some() {
+            plog("复用主窗口的 WebView2 环境");
+        } else {
+            plog("⚠ 没有主窗口环境，宠物窗口将使用独立环境（多半会以 0x8007139F 建不出来）");
+        }
+        if let Some(env) = environment {
+            builder = builder.with_environment(env);
+        }
     }
 
-    let mut builder = WebviewWindowBuilder::new(app, WINDOW_LABEL, url)
-        .title("桌面宠物")
-        .inner_size(WIN_W, WIN_H)
-        .position(x, y);
-    if let Some(env) = environment {
-        builder = builder.with_environment(env);
-    }
     builder = builder
         .decorations(false)
         .transparent(true)
@@ -440,11 +457,14 @@ fn create_window(app: &tauri::AppHandle, config: &PetConfig) -> tauri::Result<()
         .minimizable(false)
         .always_on_top(true)
         .skip_taskbar(true);
+
     // 附加参数必须与主窗口一致（原因见 BROWSER_ARGS 的注释）；当前 BROWSER_ARGS 为空，
     // 空串就不下发（避免给 WebView2 传一个空参数）。
+    #[cfg(windows)]
     if !BROWSER_ARGS.is_empty() {
         builder = builder.additional_browser_args(BROWSER_ARGS);
     }
+
     let built = builder
         // 直接建成可见窗口：WebView2 在「隐藏窗口」里创建时，出现过整窗空白不渲染的情况，
         // 而宠物页面自带深色卡片底（见 pet.css），不存在白底闪一下的问题。

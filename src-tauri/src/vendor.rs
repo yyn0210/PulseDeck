@@ -38,6 +38,7 @@
 
 use crate::fan_pref::FanPrefStore;
 use crate::msr_bridge;
+use crate::platform::Vendor;
 use crate::wmi;
 
 /// 厂商风扇读数：转速 + 来源描述
@@ -49,34 +50,15 @@ pub struct VendorFan {
     pub source: String,
 }
 
-/// 已识别的整机厂商
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Vendor {
-    Lenovo,
-    /// 非联想，或未能识别
-    Other,
-}
-
 impl Vendor {
     /// 识别整机厂商。机型不会变，内部已缓存结果。
+    /// （枚举本体与 `label()` 在 `platform` 层——它们要进跨平台的数据类型；
+    /// 识别手段才是 Windows 专属的，所以留在这里。）
     pub fn detect() -> Self {
         if wmi::is_lenovo() {
             Vendor::Lenovo
         } else {
             Vendor::Other
-        }
-    }
-
-    /// 界面上展示的厂商名。
-    ///
-    /// 当前界面用风扇的 `source` 文案（如「联想 EC（上限 4500 RPM）」）表达来源，
-    /// 所以这个短名暂时没有调用点；保留它是为了让界面文案集中在一处，
-    /// 将来加「设备信息」区块时直接用。
-    #[allow(dead_code)]
-    pub fn label(self) -> &'static str {
-        match self {
-            Vendor::Lenovo => "联想",
-            Vendor::Other => "通用",
         }
     }
 }

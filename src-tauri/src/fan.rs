@@ -28,44 +28,14 @@
 
 use std::time::{Duration, Instant};
 
-use crate::vendor::{Vendor, VendorProbe};
+use crate::platform::{FanReading, FanReport, Vendor};
+use crate::vendor::VendorProbe;
 use crate::wmi::{self, HwFan};
 
 /// WMI 查询较慢，失败后至少隔这么久再试（与 thermal.rs 的节流策略一致）
 const RETRY_AFTER: Duration = Duration::from_secs(60);
 /// 成功后的刷新间隔：风扇转速变化比温度慢，30s 足够
 const REFRESH_AFTER: Duration = Duration::from_secs(30);
-
-/// 一次采样拿到的风扇读数
-#[derive(Debug, Clone, Default)]
-pub struct FanReading {
-    /// 转速（RPM）。仅当数据源可信为 RPM 时有值。
-    pub rpm: Option<f32>,
-    /// 风扇占空比（%）。ACPI 的「相对速度」和 NVML 的百分比都归到这里。
-    pub pct: Option<f32>,
-    /// 数据来源描述，直接展示在界面上
-    pub source: String,
-}
-
-impl FanReading {
-    /// 取到任何可用读数
-    pub fn any(&self) -> bool {
-        self.rpm.is_some() || self.pct.is_some()
-    }
-}
-
-/// 整个应用一份的整体风扇报告
-#[derive(Debug, Clone, Default)]
-pub struct FanReport {
-    /// CPU 风扇（优先厂商通道，其次 LHM/OHM 的 cpu 归属传感器或 ACPI）
-    pub cpu: FanReading,
-    /// 各 GPU 风扇，按 GPU 名称关键字匹配
-    pub gpus: Vec<FanReading>,
-    /// 拿不到任何风扇时展示给用户的说明
-    pub hint: String,
-    /// 识别到的整机厂商（供界面标注数据来源）
-    pub vendor: Option<Vendor>,
-}
 
 pub struct FanProbe {
     /// 厂商私有通道（联想 ACPI-WMI）。机型相关，是联想机型上 CPU 风扇的唯一来源。

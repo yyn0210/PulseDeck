@@ -1,8 +1,12 @@
 # CI：push / PR 到 main 时跑 Rust 单测 + 走 tauri CLI 构建校验，并挂出 exe 供手动下载
 #
-# 注意：本项目仅面向 Windows（x86_64-pc-windows-msvc），所以只有 Windows job；
-# 构建一律走 `npm run build:exe`（tauri CLI 会追加 custom-protocol feature），
-# 绝不能在 CI 里裸 `cargo build --release`（会产出请求 devUrl 的白屏 exe）。
+# Windows job 是发布目标（x86_64-pc-windows-msvc）；构建一律走 `npm run build:exe`
+# （tauri CLI 会追加 custom-protocol feature），绝不能在 CI 里裸 `cargo build --release`
+# （会产出请求 devUrl 的白屏 exe）。
+#
+# Ubuntu job 只做 `cargo check`：指标读取已按 platform/ trait 抽象 + 全 crate
+# cfg(windows) 分区（2026-10-14），非 Windows 路径（占位实现 + cfg 剔除后的命令
+# 注册/装配）靠这个 job 持续验证不腐烂。不做测试、不打包。
 
 name: CI
 
@@ -62,3 +66,45 @@ jobs:
           path: src-tauri/target/release/pulse-deck.exe
           retention-days: 7
           if-no-files-found: error
+
+  # 跨平台守护：Linux 上完整 crate（含 Tauri 依赖树）要能编译并跑通测试。
+  # runner 真机有 hwmon / procfs / power_supply / drm，Linux 采集源会被**真实运行**
+  # （无 GPU / 电池的机型按设计诚实降级）；pet / taskbar 的跨平台窗口代码
+  # 也在这一步过编译（本机 Windows 无法验证非 Windows 分支）。
+  # tauri 的 Linux 依赖需要系统库；vite build 产出 dist/ 是 generate_context! 的
+  # 编译期输入（frontendDist 必须存在），所以前端也要构建。
+  ubuntu-test:
+    name: 跨平台编译 + 测试
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Rust（stable）
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 安装 Tauri 系统依赖（webkit2gtk 4.1 等）
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - name: 缓存 Cargo（注册表 + target）
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: 安装 Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 安装前端依赖并构建 dist/
+        run: |
+          npm ci
+          npx vite build
+
+      - name: cargo test（非 Windows 路径）
+        working-directory: src-tauri
+        run: cargo test -p pulse-deck

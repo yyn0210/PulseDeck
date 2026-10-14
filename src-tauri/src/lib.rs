@@ -5,22 +5,49 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-mod battery;
-mod fan;
-mod fan_pref;
+/* ---------------- 模块分区 ----------------
+ *
+ * 跨平台公共层：sampler（采样编排）、platform（OS 绑定通道的 trait 与分派）、
+ * battery（电池读数纯加工）、model、fan_pref、pet / taskbar（两个挂件窗口在
+ * 三平台上都是 tauri 通用 API，只有细节处的平台差异加了 cfg）。
+ * ⚠️ 公共层不得直接 use 下面的 Windows 模块，OS 绑定的读取一律走 platform
+ * 的 trait（见 platform/mod.rs 的「硬性约束」）——这是 cfg 分区能成立的边界。
+ *
+ * Windows 专属：采样通道的具体实现（gpu/thermal/fan/vendor/win32/wmi/pdh）、
+ * PawnIO 提权链（pawnio/pawnio_setup/msr_bridge）。
+ */
+
+#[cfg(windows)]
 mod gpu;
-mod model;
-mod msr_bridge;
-mod pawnio;
-mod pawnio_setup;
+#[cfg(windows)]
+mod thermal;
+#[cfg(windows)]
+mod fan;
+#[cfg(windows)]
+mod vendor;
+#[cfg(windows)]
+mod win32;
+#[cfg(windows)]
+mod wmi;
+#[cfg(windows)]
 mod pdh;
+#[cfg(windows)]
+mod pawnio;
+#[cfg(windows)]
+mod pawnio_setup;
+#[cfg(windows)]
+mod msr_bridge;
+
+/// 电池纯加工层：Windows 与 Linux 采集源都在调用（`battery::from_raw`）；
+/// macOS 等未适配平台暂时闲置，先允许。
+#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
+mod battery;
+mod fan_pref;
+mod model;
 mod pet;
+mod platform;
 mod sampler;
 mod taskbar;
-mod thermal;
-mod vendor;
-mod win32;
-mod wmi;
 
 use model::Snapshot;
 use tauri::menu::{CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder};
@@ -33,7 +60,8 @@ pub struct AppState {
     interval_ms: Arc<AtomicU32>,
     /// 关闭主窗口时是「隐藏到托盘」还是直接退出
     close_to_tray: Arc<AtomicBool>,
-    /// 本会话是否已尝试拉起「MSR 温度桥接」进程（防止反复弹 UAC）
+    /// 本会话是否已尝试拉起「MSR 温度桥接」进程（防止反复弹 UAC，Windows 专属）
+    #[cfg(windows)]
     bridge_prompted: Arc<AtomicBool>,
     /// 桌面宠物的配置（窗口是否存在的依据，落盘在 pet.json）
     pet: pet::PetStore,
@@ -77,7 +105,7 @@ fn get_runtime_config(state: State<'_, AppState>) -> serde_json::Value {
     })
 }
 
-/* ---------------- 桌面宠物 ---------------- */
+/* ---------------- 桌面宠物（Windows 专属挂件） ---------------- */
 
 /// 当前宠物配置（前端设置页据此回显）
 #[tauri::command]
@@ -157,7 +185,7 @@ fn show_main_window(app: tauri::AppHandle) {
     }
 }
 
-/* ---------------- 任务栏显示 ---------------- */
+/* ---------------- 任务栏显示（Windows 专属挂件） ---------------- */
 
 /// 当前任务栏挂件配置（设置页据此回显）
 #[tauri::command]
@@ -231,6 +259,7 @@ fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<bool, String> {
 /// 前端据此决定是否在温度不可用时显示「安装 PawnIO」按钮：
 /// 只有「没装」且「随包安装器在」时才引导安装——已经装上却读不到温度是另一类问题（多半是
 /// 用户取消了 UAC），此时按钮没有意义。
+#[cfg(windows)]
 #[tauri::command]
 fn pawnio_status(app: tauri::AppHandle) -> serde_json::Value {
     let probe = pawnio_setup::probe();
@@ -251,6 +280,7 @@ fn pawnio_status(app: tauri::AppHandle) -> serde_json::Value {
 /// 前端据此决定提示文案：
 /// * `elevatedActive`：提权桥接是否正在提供新鲜读数（说明用户已授权且正常工作）；
 /// * `missing`：还差什么（`pawnio` = 没装驱动；`lenovoFan` = 联想通道未启用）。
+#[cfg(windows)]
 #[tauri::command]
 fn hardware_status(app: tauri::AppHandle, state: State<'_, AppState>) -> serde_json::Value {
     let probe = pawnio_setup::probe();
@@ -303,6 +333,7 @@ fn set_fan_pref(state: State<'_, AppState>, pref: fan_pref::FanPref) -> fan_pref
 ///
 /// 真正的安装在**提权子进程**里完成（它顺带读温度），所以全过程只弹一次 UAC。
 /// 这里立刻返回，前端靠轮询 `pawnio_status` 观察结果。
+#[cfg(windows)]
 #[tauri::command]
 fn install_pawnio(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<String, String> {
     let resource_dir = app
@@ -325,6 +356,7 @@ fn install_pawnio(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<S
 ///
 /// 不装 PawnIO、只拉起提权桥接读风扇；若 PawnIO 也缺失且安装器在，顺带装上——
 /// 反正已经弹过一次 UAC 了，不必让用户点两次。
+#[cfg(windows)]
 #[tauri::command]
 fn enable_elevated(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<String, String> {
     let resource_dir = app
@@ -469,15 +501,42 @@ fn install_crash_logger() {
     }));
 }
 
-/// 应用数据目录：崩溃日志、桌面宠物配置等运行时文件都放这里
-/// 位置：%LOCALAPPDATA%\PulseDeck
+/// 应用数据目录：崩溃日志、桌面宠物配置等运行时文件都放这里。
+///
+/// 按各平台惯例选址（Windows 上与原实现逐字节一致，不迁移现有用户）：
+/// * Windows：`%LOCALAPPDATA%\PulseDeck`
+/// * macOS：`~/Library/Application Support/PulseDeck`
+/// * Linux：`$XDG_CONFIG_HOME/pulsedeck`（未设则 `~/.config/pulsedeck`）
 fn app_dir() -> std::path::PathBuf {
-    let dir = std::env::var_os("LOCALAPPDATA")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir)
-        .join("PulseDeck");
-    migrate_legacy_app_dir(&dir);
-    dir
+    #[cfg(windows)]
+    {
+        let dir = std::env::var_os("LOCALAPPDATA")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join("PulseDeck");
+        migrate_legacy_app_dir(&dir);
+        dir
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
+        home.join("Library/Application Support/PulseDeck")
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let base = std::env::var_os("XDG_CONFIG_HOME")
+            .map(std::path::PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")))
+            .unwrap_or_else(std::env::temp_dir);
+        base.join("pulsedeck")
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        std::env::temp_dir().join("PulseDeck")
+    }
 }
 
 /// 品牌从 WinMonitor 改成 PulseDeck 时，把旧目录里的用户配置搬过来，
@@ -485,6 +544,7 @@ fn app_dir() -> std::path::PathBuf {
 ///
 /// 只在 PulseDeck 目录**还不存在**时跑一次；任何一个环节出错都静默跳过——
 /// 迁移失败最多是读默认值，不该拖垮启动。
+#[cfg(windows)]
 fn migrate_legacy_app_dir(new_dir: &std::path::Path) {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
@@ -511,8 +571,15 @@ fn migrate_legacy_app_dir(new_dir: &std::path::Path) {
 
 /// 子进程模式入口：被提权拉起时（带 `--pawnio-bridge`）只跑温度桥接循环，不建窗口。
 /// 返回值表示「本次进程是不是桥接进程」。
+#[cfg(windows)]
 pub fn run_bridge_if_requested() -> bool {
     msr_bridge::run_if_requested()
+}
+
+/// 非 Windows 没有 PawnIO / UAC 提权桥接的概念，进程一定不是桥接进程。
+#[cfg(not(windows))]
+pub fn run_bridge_if_requested() -> bool {
+    false
 }
 
 pub fn run() {
@@ -561,12 +628,37 @@ pub fn run() {
 
     // 温度桥接（读 MSR 需要管理员）的「本会话是否已尝试提权」标志，
     // 防止启动过程中反复弹 UAC。
+    #[cfg(windows)]
     let bridge_prompted = Arc::new(AtomicBool::new(false));
 
     // 风扇偏好只加载一次，同时交给采样线程与设置页——两边必须是同一个句柄，
     // 否则「改了 CPU 风扇号」只在设置页生效、读数纹丝不动。
     let fan_pref = fan_pref::FanPrefStore::load();
     sampler.set_fan_pref(fan_pref.clone());
+
+    // AppState 的字段组成随平台略有不同（提权标志仅 Windows）。
+    // 结构体字面量的字段位置不支持 cfg 属性，所以在构建处分叉两份。
+    #[cfg(windows)]
+    let app_state = AppState {
+        sampler,
+        paused,
+        interval_ms,
+        close_to_tray,
+        bridge_prompted: bridge_prompted.clone(),
+        pet,
+        taskbar,
+        fan_pref,
+    };
+    #[cfg(not(windows))]
+    let app_state = AppState {
+        sampler,
+        paused,
+        interval_ms,
+        close_to_tray,
+        pet,
+        taskbar,
+        fan_pref,
+    };
 
     tauri::Builder::default()
         // 单实例闸门必须**第一个**注册（插件文档要求）：第二次启动时新进程会立刻退出，
@@ -585,16 +677,7 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None::<Vec<&str>>,
         ))
-        .manage(AppState {
-            sampler,
-            paused,
-            interval_ms,
-            close_to_tray,
-            bridge_prompted: bridge_prompted.clone(),
-            pet,
-            taskbar,
-            fan_pref,
-        })
+        .manage(app_state)
         .invoke_handler(tauri::generate_handler![
             get_snapshot,
             set_paused,
@@ -603,11 +686,17 @@ pub fn run() {
             get_runtime_config,
             get_autostart,
             set_autostart,
+            // 以下命令依赖 Windows 专属模块（PawnIO 提权链），
+            // generate_handler! 会随 cfg 剔除条目（2026-10-14 实验确认）
+            #[cfg(windows)]
             pawnio_status,
+            #[cfg(windows)]
             hardware_status,
             get_fan_pref,
             set_fan_pref,
+            #[cfg(windows)]
             install_pawnio,
+            #[cfg(windows)]
             enable_elevated,
             get_pet_config,
             set_pet_config,
@@ -622,13 +711,15 @@ pub fn run() {
             show_main_window
         ])
         .setup({
+            #[cfg(windows)]
             let setup_prompted = bridge_prompted.clone();
             move |app| {
                 build_tray(app.handle())?;
 
-                // 先把主窗口的 WebView2 环境缓存下来：宠物 / 任务栏挂件两个窗口都必须复用它，
-                // 而 `with_webview` 只在主线程同步有效——这里（setup）正好是主线程。
-                // 放在建窗口**之前**：之后建窗口的动作都在非主线程上，现取是取不到的。
+                // 先把主窗口的 WebView2 环境缓存下来（仅 Windows 有此机制）：宠物 / 任务栏挂件
+                // 两个窗口都必须复用它，而 `with_webview` 只在主线程同步有效——这里（setup）正好
+                // 是主线程。放在建窗口**之前**：之后建窗口的动作都在非主线程上，现取是取不到的。
+                #[cfg(windows)]
                 pet::capture_main_environment(app.handle());
 
                 // 恢复桌面宠物窗口（配置里 enabled=true 时才建）。
@@ -648,10 +739,11 @@ pub fn run() {
                     }
                 }
 
-                // 后台拉起「MSR 温度桥接」子进程（提权 + 隐藏窗口），不阻塞主窗口启动。
+                // 后台拉起「MSR 温度桥接」子进程（提权 + 隐藏窗口），不阻塞主窗口启动（Windows）。
                 // 资源目录来自 Tauri 的 Resource 目录（由 bundle.resources 打进安装包），
                 // 温度模块位于 <resource_dir>/pawnio/IntelMSR.bin。
                 // 只有当读数缺失/过期时才拉，且一个会话只尝试一次（避免 UAC 轰炸）。
+                #[cfg(windows)]
                 if let Ok(resource_dir) = app.path().resource_dir() {
                     let prompted = setup_prompted.clone();
                     std::thread::spawn(move || {
@@ -723,7 +815,9 @@ pub fn run() {
  *   cargo test diag_wmi -- --nocapture            # WMI 连通性（可加 WB_WMI_DIAG=1 看逐步 HRESULT）
  */
 
+// 诊断用例全部直连 Windows 原生数据源（PDH / WMI / PawnIO / NVML），随平台一起门控。
 #[cfg(test)]
+#[cfg(windows)]
 mod diag {
     fn flush(tag: &str) {
         use std::io::Write;
@@ -1159,7 +1253,10 @@ mod diag {
         }
         flush("parsed");
         println!("raw   = {:?}", super::win32::battery());
-        println!("info  = {:?}", super::battery::collect());
+        println!(
+            "info  = {:?}",
+            super::battery::from_raw(super::win32::battery(), super::win32::battery_percent())
+        );
     }
 
     /// 电源类 PDH 计数器是否有实例、单位与量级

@@ -16,16 +16,23 @@ tauri = { version = "2", features = ["tray-icon"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sysinfo = "0.39.6"
-windows-sys = { version = "0.59", features = [
-  "Win32_Foundation",
-  "Win32_System_Power",
-  "Win32_System_SystemInformation",
-] }
+# NVML 绑定：Windows 与 Linux 共用（platform/gpu_nvml.rs），动态加载各平台的 NVML 库。
+# 非 NVIDIA 环境初始化失败 —— 属设计内的降级路径。
 nvml-wrapper = "0.13"
 tauri-plugin-autostart = "2"
 # 单实例：第二次启动只把已有实例的主窗口拉到前台，避免两个托盘图标 / 两只宠物，
 # 以及两个实例对 pet.json、fan.json 的「后写覆盖」互相踩
 tauri-plugin-single-instance = "2"
+
+# Windows 专属依赖（PDH / WMI-COM 绑定、两个挂件窗口的 WebView2 复用）。
+# 采样层的 OS 绑定代码已全部 cfg 门控（见 src/platform/），依赖随之分区；
+# 将来加各平台打包依赖时在对应的 [target.'cfg(...)'.dependencies] 里追加。
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+  "Win32_Foundation",
+  "Win32_System_Power",
+  "Win32_System_SystemInformation",
+] }
 windows = { version = "0.62", features = [
   "Win32_Foundation",
   "Win32_System_Performance",

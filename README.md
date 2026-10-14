@@ -181,6 +181,44 @@
 统一由 Rust 侧在**后台采样线程**每 N 毫秒刷新一次，前端只拉取最后一次快照，
 避免多窗口/多次刷新导致重复采样。速率类指标一律用**实测采样间隔**（而非配置值）换算。
 
+### 平台抽象层与支持矩阵
+
+下表的接口全是 Windows 专属的。OS 绑定的采集通道（GPU / 温度 / 风扇 / 电池 /
+内存附加）已收敛到 `src-tauri/src/platform/` 的 5 个 trait（`GpuSource` /
+`ThermalSource` / `FanSource` / `BatterySource` / `MemoryExtras`），
+由 `platform::sources()` 按编译目标分派实现。CPU / 内存基础 / 磁盘 / 网络 /
+进程榜走 `sysinfo`（本身跨平台），不进该层。
+
+| 功能 | Windows | Linux | macOS |
+| --- | --- | --- | --- |
+| CPU / 内存 / 磁盘 / 网络 / 进程（sysinfo） | ✅ | ✅ | ✅ |
+| GPU（占用 / 显存 / 温度 / 功耗 / 风扇） | NVML + PDH 兜底 | NVML + amdgpu sysfs 兜底 | — |
+| CPU 温度 | PawnIO MSR（提权桥接）→ LHM → ACPI → PDH 四级 | hwmon（coretemp / k10temp / zenpower） | — |
+| CPU 封装功耗 | PDH RAPL | RAPL powercap（Intel） | — |
+| 风扇转速 | 联想厂商通道 / LHM / ACPI | hwmon fan / pwm | — |
+| 电池与充电功率 | CallNtPowerInformation | `/sys/class/power_supply` | — |
+| 已提交内存 | GlobalMemoryStatusEx | `/proc/meminfo`（Committed_AS） | — |
+| 桌面宠物 | ✅ | ✅ | ✅ |
+| 任务栏挂件 | 贴任务栏条带（含全屏自动隐藏、主题跟随） | 贴屏幕右下角边条（无全屏隐藏、主题读 gsettings） | 同 Linux |
+| 提权桥接（PawnIO） | ✅（设置页「高级采集」） | 不需要（hwmon 免提权） | — |
+
+未适配平台（macOS 等）走 `platform/unsupported.rs` 诚实占位——统一返回
+「当前操作系统暂不支持该指标的采集」，绝不编造数值；该占位实现**在所有平台
+都参与编译**，接口漂移在 Windows / Linux 上就会被测试发现。macOS 的温度 /
+风扇 / 电池功率需要一个 Mac 才能开发与验证（IOKit / SMC），暂不实现，
+基础指标由 sysinfo 天然可用。
+
+平台细节（非 Windows 的已知限制，均在对应实现处注释）：
+任务栏挂件在 Linux 上退化为贴屏幕右下的置顶边条；全屏应用自动隐藏在非
+Windows 不可用（Wayland 没有全局窗口枚举）；面板主题读 `gsettings`（GNOME 系），
+其余桌面环境按深色处理；Linux 的「CPU 风扇号手动指定」暂不支持（FanID 是
+联想 ACPI-WMI 概念）。
+
+Windows 专属的代码（PawnIO 提权链、任务栏的原生几何查询）全部 `#[cfg(windows)]`
+门控，依赖也已拆入 `[target.'cfg(windows)'.dependencies]`；CI 有 Ubuntu
+`cargo test` job 在真机 hwmon / procfs 上守护 Linux 路径。接入新平台见
+`platform/mod.rs` 的模块文档。
+
 | 指标                             | 接口                                                                                                                                                                                                                                                                                                                                            |
 | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | CPU 占用 / 每核 / 主频               | `sysinfo` (`System::refresh_cpu_all`)                                                                                                                                                                                                                                                                                                         |

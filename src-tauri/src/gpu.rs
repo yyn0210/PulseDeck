@@ -2,6 +2,7 @@
 //!
 //! 为什么分两级：
 //! - NVML 能给全部指标（占用 / 显存 / 温度 / 功耗 / 风扇），但只覆盖 NVIDIA；
+//!   NVML 探针本体与 Linux 共用，见 [`crate::platform::gpu_nvml`]。
 //! - PDH 的 `GPU Engine` 与 `GPU Adapter Memory` 是 Windows 内建计数器，
 //!   对 Intel 核显、AMD 都有效，但拿不到温度（温度交给 `thermal.rs`）。
 
@@ -11,6 +12,7 @@ use windows::Win32::System::Performance::PDH_HCOUNTER;
 
 use crate::model::GpuDevice;
 use crate::pdh::Query;
+use crate::platform::gpu_nvml::{clamp_pct, NvmlSource};
 
 /// GPU Engine 各进程实例占用
 const GPU_UTIL_PATH: &str = r"\GPU Engine(*)\Utilization Percentage";
@@ -32,12 +34,8 @@ struct PdhGpu {
 unsafe impl Send for PdhGpu {}
 
 pub struct GpuProbe {
-    /// 故意泄漏持有：NVML 内部有后台线程，进程退出时若卸载 nvml.dll
-    /// （Nvml 的 Drop 会释放动态库）偶发 STATUS_ACCESS_VIOLATION。
-    /// 泄漏后动态库随进程正常退出由系统回收。
-    nvml: Option<&'static nvml_wrapper::Nvml>,
-    /// NVML 初始化失败后不再重试，避免每拍都去 LoadLibrary
-    nvml_tried: bool,
+    /// NVML 有状态探针（Windows / Linux 共用实现）
+    nvml: NvmlSource,
     pdh: Option<PdhGpu>,
 }
 
@@ -50,90 +48,20 @@ impl Default for GpuProbe {
 impl GpuProbe {
     pub fn new() -> Self {
         Self {
-            nvml: None,
-            nvml_tried: false,
+            nvml: NvmlSource::new(),
             pdh: None,
         }
     }
 
     /// 采样一次。返回 (设备列表, 数据来源标识)
     pub fn sample(&mut self) -> (Vec<GpuDevice>, String) {
-        if let Some(devices) = self.sample_nvml() {
+        if let Some(devices) = self.nvml.sample() {
             if !devices.is_empty() {
                 return (devices, "nvml".to_string());
             }
         }
         let (devices, warmed) = self.sample_pdh();
         (devices, if warmed { "pdh".to_string() } else { "pdh-warming".to_string() })
-    }
-
-    /* ------------------------------ NVML ------------------------------ */
-
-    fn sample_nvml(&mut self) -> Option<Vec<GpuDevice>> {
-        if self.nvml.is_none() {
-            if self.nvml_tried {
-                return None;
-            }
-            self.nvml_tried = true;
-            // 没有 NVIDIA 驱动时这里会返回 Err（动态加载 nvml.dll 失败），属正常情况
-            let instance = nvml_wrapper::Nvml::init().ok()?;
-            self.nvml = Some(Box::leak(Box::new(instance)));
-        }
-        let nvml = self.nvml.as_ref()?;
-
-        let count = nvml.device_count().ok()?;
-        let mut out = Vec::new();
-        for i in 0..count {
-            let Ok(dev) = nvml.device_by_index(i) else {
-                continue;
-            };
-            let name = dev.name().unwrap_or_else(|_| format!("NVIDIA GPU #{i}"));
-
-            let usage_pct = dev.utilization_rates().ok().map(|u| clamp_pct(u.gpu as f32));
-
-            let (mem_used, mem_total, mem_pct) = match dev.memory_info() {
-                Ok(m) => {
-                    let pct = if m.total > 0 {
-                        Some(clamp_pct(m.used as f32 / m.total as f32 * 100.0))
-                    } else {
-                        None
-                    };
-                    (m.used, m.total, pct)
-                }
-                Err(_) => (0, 0, None),
-            };
-
-            let temp_c = dev
-                .temperature(nvml_wrapper::enum_wrappers::device::TemperatureSensor::Gpu)
-                .ok()
-                .map(|t| t as f32);
-            // NVML 的功耗单位是 mW
-            let power_w = dev.power_usage().ok().map(|mw| mw as f32 / 1000.0);
-            // fan_speed 返回的是**占空比百分比**（0-100），不是 RPM。
-            // 桌面卡上通常有值；笔记本独显风扇由 EC 控制，驱动返回 N/A（这里就是 Err → None）。
-            let fan_pct = dev.fan_speed(0).ok().map(|v| v as f32);
-            // 个别型号/驱动能直接给 RPM；拿不到就是 None，不拿百分比硬凑成「转速」。
-            let fan_rpm = dev
-                .fan_speed_rpm(0)
-                .ok()
-                .map(|v| v as f32)
-                .filter(|v| *v > 0.0);
-
-            out.push(GpuDevice {
-                index: i,
-                name,
-                usage_pct,
-                mem_used_bytes: mem_used,
-                mem_total_bytes: mem_total,
-                mem_pct,
-                temp_c,
-                power_w,
-                fan_pct,
-                fan_rpm,
-                source: "nvml".to_string(),
-            });
-        }
-        Some(out)
     }
 
     /* ------------------------------ PDH ------------------------------ */
@@ -257,12 +185,4 @@ fn adapter_label(key: &str, index: usize) -> String {
         return format!("图形适配器 {phys}(#{index})");
     }
     format!("图形适配器 #{index}")
-}
-
-fn clamp_pct(v: f32) -> f32 {
-    if !v.is_finite() {
-        0.0
-    } else {
-        v.clamp(0.0, 100.0)
-    }
 }

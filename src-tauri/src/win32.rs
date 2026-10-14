@@ -6,6 +6,7 @@
 
 use std::mem::{size_of, zeroed};
 
+use crate::platform::{MemoryStatus, RawBattery};
 use windows_sys::Win32::System::Power::{
     CallNtPowerInformation, GetSystemPowerStatus, SystemBatteryState, SYSTEM_BATTERY_STATE,
     SYSTEM_POWER_STATUS,
@@ -32,18 +33,6 @@ fn known(v: u32) -> u32 {
 
 /* ------------------------------ 内存 ------------------------------ */
 
-#[derive(Clone, Copy, Debug, Default)]
-pub struct MemoryStatus {
-    /// dwMemoryLoad
-    pub load_pct: u32,
-    pub phys_total_bytes: u64,
-    pub phys_avail_bytes: u64,
-    /// 提交上限 = 物理内存 + 页面文件大小
-    pub commit_limit_bytes: u64,
-    /// 当前已提交量
-    pub commit_used_bytes: u64,
-}
-
 pub fn memory_status() -> Option<MemoryStatus> {
     unsafe {
         let mut m: MEMORYSTATUSEX = zeroed();
@@ -62,23 +51,6 @@ pub fn memory_status() -> Option<MemoryStatus> {
 }
 
 /* ------------------------------ 电池 ------------------------------ */
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct RawBattery {
-    pub present: bool,
-    pub ac_online: bool,
-    pub charging: bool,
-    pub discharging: bool,
-    /// 满充容量，单位 mWh
-    pub max_capacity_mwh: u32,
-    /// 剩余容量，单位 mWh
-    pub remaining_capacity_mwh: u32,
-    /// 充/放电功率，单位 mW（恒为正值，方向由 charging/discharging 决定）
-    pub rate_mw: u32,
-    /// 剩余估算时间，单位秒
-    pub estimated_time_s: u32,
-    pub source: &'static str,
-}
 
 /// SYSTEM_BATTERY_STATE::Rate 声明为 DWORD，实机上却按**有符号**返回：
 ///   正值 = 充电功率(mW)，负值 = 放电功率(mW)，0 / ±1 = 固件未提供。

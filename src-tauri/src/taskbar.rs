@@ -1,4 +1,4 @@
-//! 任务栏显示模式：把勾选的指标贴在 Windows 任务栏上的一条细挂件
+//! 任务栏显示模式：把勾选的指标贴在系统任务栏上的一条细挂件
 //!
 //! 与桌面宠物（`pet.rs`）同为「Rust 侧持有的第二个 WebView」，但有三处不同：
 //!
@@ -9,6 +9,17 @@
 //! 3. **任务栏是会变的**：换边、改厚度、自动隐藏、explorer 重启（`Shell_TrayWnd` 换句柄）。
 //!    建窗时拉起的**看护线程**每秒重算一次落点与 topmost，始终跟着任务栏；
 //!    全屏应用在前台时还会把挂件藏起来——否则一条挂件会压在游戏 / 全屏视频画面上。
+//!
+//! ## 跨平台形态
+//!
+//! 几何（`stripe_of` / `dock_rect`）/ 配置 / 读数 / 看护线程全部与平台无关，
+//! 只有 5 个「桌面查询」按平台分派（见文件中部「桌面查询」一节）：
+//!
+//! * **Windows**：真实读取任务栏 / 通知区域矩形、任务栏主题、全屏前台窗口，并主动重顶；
+//! * **其他平台**：没有统一的面板接口（GNOME / KDE / Wayland 各不相同），
+//!   桌面查询诚实降级——挂件变成贴**屏幕右下角**的置顶细条（`stripe_of` 的
+//!   「无任务栏矩形 → 贴底默认厚度」路径，本来就有单测覆盖）；全屏自动隐藏不可用
+//!   （Wayland 没有全局窗口枚举），挂件始终显示。
 //!
 //! 窗口置顶、无边框、透明、不进任务栏，并且**不抢焦点**（`focusable(false)` → WS_EX_NOACTIVATE）：
 //! 任务栏旁边的东西一旦能激活，用户点一下焦点就从当前应用飞走了。整条挂件点一下呼出主面板。
@@ -21,9 +32,14 @@ use serde::{Deserialize, Serialize};
 use tauri::{
     Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
+
+#[cfg(windows)]
 use windows::core::PCWSTR;
+#[cfg(windows)]
 use windows::Win32::Foundation::{ERROR_SUCCESS, HWND, RECT, WIN32_ERROR};
+#[cfg(windows)]
 use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
+#[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
     FindWindowExW, FindWindowW, GetDesktopWindow, GetForegroundWindow, GetShellWindow,
     GetWindowLongPtrW, GetWindowRect, SetWindowPos, GWL_STYLE, HWND_TOPMOST, SWP_ASYNCWINDOWPOS,
@@ -324,6 +340,10 @@ pub fn dock_rect(stripe: Stripe, want: (i32, i32), tray: Option<Rect>, scale: f6
 /// 两条都要满足：贴满整块显示器（容差 2px）、**且不是被最大化**。
 /// 为什么必须排除最大化：任务栏自动隐藏时，最大化的窗口同样铺满整块屏幕，
 /// 只按矩形判断的话，用户一最大化窗口挂件就消失了。
+///
+/// 非 Windows 上 `foreground_covers` 恒为 false（Wayland 无法查询全局窗口），
+/// 本函数暂无使用者，但保留并继续由单测守护——它是平台中立的判定规则。
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn covers_monitor(fg: Rect, monitor: Rect, maximized: bool) -> bool {
     const TOL: i32 = 2;
     !maximized
@@ -374,17 +394,19 @@ fn desk_of(app: &tauri::AppHandle) -> Desk {
     }
 }
 
-/// 当前任务栏条带
+/// 当前任务栏条带：Windows 贴真实任务栏；其他平台 `taskbar_rect()` 为 None →
+/// 贴屏幕底边、默认厚度（挂件退化为屏幕右下角边条）。
 fn current_stripe(desk: &Desk) -> Stripe {
     stripe_of(
         desk.monitor,
-        window_rect_opt(taskbar_window()),
+        taskbar_rect(),
         px(DEFAULT_TH_LOGICAL, desk.scale),
     )
 }
 
-/* ------------------------------ Win32 查询 ------------------------------ */
+/* ------------------------------ 桌面查询（按平台分派） ------------------------------ */
 
+#[cfg(windows)]
 fn rect_from(r: RECT) -> Rect {
     Rect {
         x: r.left,
@@ -394,24 +416,37 @@ fn rect_from(r: RECT) -> Rect {
     }
 }
 
+#[cfg(windows)]
 fn window_rect(hwnd: HWND) -> Option<Rect> {
     let mut r = RECT::default();
     unsafe { GetWindowRect(hwnd, &mut r).ok()? };
     Some(rect_from(r))
 }
 
-fn window_rect_opt(hwnd: Option<HWND>) -> Option<Rect> {
-    hwnd.and_then(window_rect)
-}
-
 /// 主任务栏窗口（`Shell_TrayWnd`）
+#[cfg(windows)]
 fn taskbar_window() -> Option<HWND> {
     unsafe { FindWindowW(windows::core::w!("Shell_TrayWnd"), PCWSTR::null()).ok() }
 }
 
+/// 主任务栏（面板）的矩形。
+///
+/// Windows 读 `Shell_TrayWnd`；其他平台没有统一的面板接口（GNOME / KDE / Wayland
+/// 各不相同）→ None，`stripe_of` 退回「贴屏幕底边 + 默认厚度」。
+#[cfg(windows)]
+fn taskbar_rect() -> Option<Rect> {
+    taskbar_window().and_then(window_rect)
+}
+
+#[cfg(not(windows))]
+fn taskbar_rect() -> Option<Rect> {
+    None
+}
+
 /// 通知区域（托盘图标 + 时钟）的矩形：挂件停在它左边，不去压时钟。
 /// 找不到（个别系统 / 精简版外壳）时返回 None，`dock_rect` 会退回固定预留宽度。
-fn tray_rect() -> Option<Rect> {
+#[cfg(windows)]
+fn tray_rect(_monitor: Rect) -> Option<Rect> {
     let bar = taskbar_window()?;
     let tray = unsafe {
         FindWindowExW(Some(bar), None, windows::core::w!("TrayNotifyWnd"), PCWSTR::null()).ok()?
@@ -419,11 +454,24 @@ fn tray_rect() -> Option<Rect> {
     window_rect(tray)
 }
 
+/// 非 Windows：返回「屏幕右缘的零宽虚拟矩形」——挂件贴住右下角。
+/// 复用 `dock_rect` 既有的「锚在托盘左侧/上方」路径（该路径有单测覆盖）。
+#[cfg(not(windows))]
+fn tray_rect(monitor: Rect) -> Option<Rect> {
+    Some(Rect {
+        x: monitor.right(),
+        y: monitor.bottom(),
+        w: 0,
+        h: 0,
+    })
+}
+
 /// 任务栏是浅色还是深色（`light` / `dark`）。
 ///
-/// 读的是 `SystemUsesLightTheme`（设置里的「Windows 模式」），**不是** `AppsUseLightTheme`
+/// Windows 读 `SystemUsesLightTheme`（设置里的「Windows 模式」），**不是** `AppsUseLightTheme`
 /// ——后者管应用窗口，和任务栏可以不一致（很多人正是「应用浅色 + 任务栏深色」）。
 /// 读不到时按深色处理：深色任务栏是绝大多数截图里的默认观感。
+#[cfg(windows)]
 fn taskbar_theme() -> &'static str {
     let mut value: u32 = 0;
     let mut size = std::mem::size_of::<u32>() as u32;
@@ -445,7 +493,33 @@ fn taskbar_theme() -> &'static str {
     }
 }
 
+/// 非 Windows：GNOME 系读 `gsettings`（KDE / Wayland 无统一接口）。
+/// 进程开销不低，首次读到什么就**缓存整个会话**（换主题需重启应用，文档注明）；
+/// 读不到（非 GNOME / 没有 gsettings）按深色。
+#[cfg(not(windows))]
+fn taskbar_theme() -> &'static str {
+    use std::sync::OnceLock;
+    static THEME: OnceLock<&'static str> = OnceLock::new();
+    THEME.get_or_init(|| {
+        let out = std::process::Command::new("gsettings")
+            .args(["get", "org.gnome.desktop.interface", "color-scheme"])
+            .output();
+        match out {
+            Ok(o) if o.status.success() => {
+                let s = String::from_utf8_lossy(&o.stdout);
+                if s.contains("light") && !s.contains("prefer-dark") {
+                    "light"
+                } else {
+                    "dark"
+                }
+            }
+            _ => "dark",
+        }
+    })
+}
+
 /// 前台窗口是否盖住了整块屏幕（全屏游戏 / 播放器 / 网页全屏视频）。判定逻辑见 [`covers_monitor`]。
+#[cfg(windows)]
 fn foreground_covers(monitor: Rect) -> bool {
     unsafe {
         let fg = GetForegroundWindow();
@@ -461,12 +535,21 @@ fn foreground_covers(monitor: Rect) -> bool {
     }
 }
 
+/// 非 Windows：诚实降级为「不隐藏」。Wayland 不提供全局窗口枚举
+/// （X11 的 EWMH 也不跨环境），无法可靠判断前台是否全屏——
+/// 全屏应用时挂件会压在画面上，属已知限制（文档注明）。
+#[cfg(not(windows))]
+fn foreground_covers(_monitor: Rect) -> bool {
+    false
+}
+
 /// 把挂件重新顶到置顶带最上面。
 ///
 /// 不能只调用 `set_always_on_top(true)`：tao 只在标志位**发生变化**时才发 `SetWindowPos`
 /// （`apply_diff` 里 diff 为空直接返回），已经是 topmost 的窗口再调一次什么都不会发生。
 /// 而任务栏被点一下就会盖到普通置顶窗口上面（Windows 的既定行为），所以必须自己发一次
 /// `SetWindowPos(HWND_TOPMOST)`——带 `SWP_NOACTIVATE`，不会抢焦点。
+#[cfg(windows)]
 fn raise_topmost(win: &WebviewWindow) -> tauri::Result<()> {
     let hwnd = win.hwnd()?;
     unsafe {
@@ -481,6 +564,12 @@ fn raise_topmost(win: &WebviewWindow) -> tauri::Result<()> {
         )
         .ok()
     };
+    Ok(())
+}
+
+/// 非 Windows：没有被任务栏压顶的问题，建窗时的 `always_on_top` 已经够用。
+#[cfg(not(windows))]
+fn raise_topmost(_win: &WebviewWindow) -> tauri::Result<()> {
     Ok(())
 }
 
@@ -510,11 +599,7 @@ fn create_window(app: &tauri::AppHandle, config: &TaskbarConfig) -> tauri::Resul
         let logical = estimate_logical_size(&config.metrics, vertical);
         (px(logical.0, desk.scale), px(logical.1, desk.scale))
     };
-    let dock = dock_rect(stripe, want, tray_rect(), desk.scale);
-
-    // Windows 上多个 WebView 共享同一个 ICoreWebView2Environment（与宠物窗口同一份，
-    // 见 pet.rs 的 MAIN_ENV 注释）：保持一致才不会有环境选项冲突。
-    let environment = crate::pet::shared_webview_environment(app);
+    let dock = dock_rect(stripe, want, tray_rect(desk.monitor), desk.scale);
 
     let mut builder = WebviewWindowBuilder::new(app, WINDOW_LABEL, WebviewUrl::App("taskbar.html".into()))
         .title("任务栏显示")
@@ -523,9 +608,17 @@ fn create_window(app: &tauri::AppHandle, config: &TaskbarConfig) -> tauri::Resul
             dock.h as f64 / desk.scale,
         )
         .position(dock.x as f64 / desk.scale, dock.y as f64 / desk.scale);
-    if let Some(env) = environment {
-        builder = builder.with_environment(env);
+
+    // Windows 上多个 WebView 共享同一个 ICoreWebView2Environment（与宠物窗口同一份，
+    // 见 pet.rs 的 MAIN_ENV 注释）：保持一致才不会有环境选项冲突。
+    // 其他平台（webkit2gtk / WKWebView）没有这层机制，跳过。
+    #[cfg(windows)]
+    {
+        if let Some(env) = crate::pet::shared_webview_environment(app) {
+            builder = builder.with_environment(env);
+        }
     }
+
     builder = builder
         .decorations(false)
         .transparent(true)
@@ -541,6 +634,7 @@ fn create_window(app: &tauri::AppHandle, config: &TaskbarConfig) -> tauri::Resul
         .focused(false);
     // 附加参数必须与主窗口 / 宠物窗口一致（见 pet::BROWSER_ARGS 的注释）；
     // 当前 BROWSER_ARGS 为空，空串就不下发（避免传一个空参数）。
+    #[cfg(windows)]
     if !crate::pet::BROWSER_ARGS.is_empty() {
         builder = builder.additional_browser_args(crate::pet::BROWSER_ARGS);
     }
@@ -598,7 +692,7 @@ fn spawn_watcher(app: tauri::AppHandle) {
                     let dock = dock_rect(
                         stripe,
                         (cur.width as i32, cur.height as i32),
-                        tray_rect(),
+                        tray_rect(desk.monitor),
                         desk.scale,
                     );
                     let _ = apply_dock(&win, dock);
@@ -653,7 +747,7 @@ pub fn fit(app: &tauri::AppHandle, width: f64, height: f64) -> tauri::Result<()>
     let scale = win.scale_factor().unwrap_or(1.0).max(0.1);
     let desk = desk_of(app);
     let stripe = current_stripe(&desk);
-    let dock = dock_rect(stripe, (px(width, scale), px(height, scale)), tray_rect(), desk.scale);
+    let dock = dock_rect(stripe, (px(width, scale), px(height, scale)), tray_rect(desk.monitor), desk.scale);
     apply_dock(&win, dock)
 }
 

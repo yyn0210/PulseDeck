@@ -59,6 +59,28 @@ const netChart = new LineChart(document.getElementById("net-chart"), {
 
 /* ---------------- 主循环 ---------------- */
 
+/* 当前平台是否为 Windows：从快照的 osName 判断（Windows 上 sysinfo 报 "Windows"，
+ * Linux 报发行版名）。Windows 专属功能（PawnIO 高级采集、联想风扇号）整套 UI 与
+ * 命令调用都由它门控——非 Windows 上那几个命令根本不存在，invoke 会直接抛错。
+ * 未知（osName 缺失）时保守按 Windows 处理：宁可显示一个读不到状态的区块，
+ * 也不要在一个能用的平台上把功能藏起来。 */
+let isWindows = true;
+let platformApplied = false;
+
+function applyPlatform(snap) {
+  const os = snap.system && snap.system.osName;
+  if (os) isWindows = /windows/i.test(os);
+  if (platformApplied) return;
+  platformApplied = true;
+
+  const advCard = document.getElementById("advanced-card");
+  if (advCard) advCard.classList.toggle("hidden", !isWindows);
+  const src = document.getElementById("status-right");
+  if (src && !isWindows) {
+    src.textContent = "数据来源：sysinfo + 平台原生接口（Linux: sysfs / procfs）";
+  }
+}
+
 async function tick() {
   if (state.paused) return;
   try {
@@ -66,6 +88,7 @@ async function tick() {
     state.latest = snap;
     state.failures = 0;
     banner.classList.add("hidden");
+    applyPlatform(snap);
     // 低频刷新 PawnIO / 高级采集状态（每 10 拍一次）：
     // 用户可能在外部装上或卸掉驱动，提权桥接也可能刚刚起来或退出
     if (state.ticks++ % 10 === 0) {
@@ -299,6 +322,11 @@ let hwStatus = null;
 let fanPref = null;
 
 async function refreshPawnioStatus() {
+  // 非 Windows 没有 PawnIO 这个概念（命令也不存在，invoke 会抛错）
+  if (!isWindows) {
+    pawnio = null;
+    return;
+  }
   try {
     pawnio = await invoke("pawnio_status");
   } catch (e) {
@@ -308,11 +336,16 @@ async function refreshPawnioStatus() {
 }
 
 async function refreshHardwareStatus() {
-  try {
-    hwStatus = await invoke("hardware_status");
-  } catch (e) {
+  if (isWindows) {
+    try {
+      hwStatus = await invoke("hardware_status");
+    } catch (e) {
+      hwStatus = null;
+    }
+  } else {
     hwStatus = null;
   }
+  // 风扇偏好是跨平台命令（Linux 也用同一份 fan.json），照常刷新
   try {
     fanPref = await invoke("get_fan_pref");
   } catch (e) {

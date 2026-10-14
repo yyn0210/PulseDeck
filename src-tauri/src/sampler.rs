@@ -9,7 +9,7 @@ use crate::model::{
     percent_of, BatteryInfo, CpuInfo, DiskInfo, GpuInfo, MemoryInfo, NetIface, NetInfo, ProcInfo,
     Snapshot, SystemInfo, ThermalInfo,
 };
-use crate::{battery, fan, gpu, thermal, win32};
+use crate::platform::{self, FanReport, GpuSource, MemoryExtras};
 
 /// 进程榜单长度
 const TOP_N: usize = 8;
@@ -20,9 +20,9 @@ struct Inner {
     sys: System,
     disks: Disks,
     net: Networks,
-    gpu: gpu::GpuProbe,
-    thermal: thermal::ThermalProbe,
-    fan: fan::FanProbe,
+    /// OS 绑定的采集通道（GPU / 温度 / 风扇 / 电池 / 内存附加），
+    /// 实现按编译目标分派（Windows = 原生探针，其余 = 诚实占位），见 `platform`
+    sources: platform::PlatformSources,
 }
 
 pub struct Sampler {
@@ -44,9 +44,7 @@ impl Sampler {
                 sys: System::new_all(),
                 disks: Disks::new_with_refreshed_list(),
                 net: Networks::new_with_refreshed_list(),
-                gpu: gpu::GpuProbe::new(),
-                thermal: thermal::ThermalProbe::new(),
-                fan: fan::FanProbe::new(),
+                sources: platform::sources(),
             }),
             latest: Mutex::new(Snapshot::default()),
             last_tick: Mutex::new(Instant::now()),
@@ -56,7 +54,7 @@ impl Sampler {
     /// 注入风扇偏好句柄：设置页改了「CPU 风扇号」，采样线程必须立刻用上同一份。
     /// 不做注入的话，两边各自 `load()` 一次 `fan.json`，改动就只在设置页生效。
     pub fn set_fan_pref(&self, pref: crate::fan_pref::FanPrefStore) {
-        self.inner.lock().unwrap().fan.set_pref(pref);
+        self.inner.lock().unwrap().sources.fan.set_pref(pref);
     }
 
     /// 启动时预热：CPU 占用需要两次采样才有值，先跑一轮避免首屏全 0
@@ -93,9 +91,7 @@ impl Sampler {
             sys,
             disks,
             net,
-            gpu,
-            thermal,
-            fan,
+            sources,
         } = &mut *inner;
 
         sys.refresh_cpu_all();
@@ -105,12 +101,12 @@ impl Sampler {
         net.refresh(true);
 
         let mut cpu = collect_cpu(sys);
-        let memory = collect_memory(sys);
+        let memory = collect_memory(sys, &*sources.memory_extras);
         let disks_out = collect_disks(disks, elapsed_secs);
-        let battery_info: BatteryInfo = battery::collect();
+        let battery_info: BatteryInfo = sources.battery.collect();
         let net_out = collect_net(net, elapsed_secs);
-        let mut gpu_out = collect_gpu(gpu);
-        let thermal_out: ThermalInfo = thermal.sample();
+        let mut gpu_out = collect_gpu(&mut *sources.gpu);
+        let thermal_out: ThermalInfo = sources.thermal.sample();
         // NVML 拿不到温度时（Intel / AMD 显卡）回退到硬件监控软件的读数
         if gpu_out.temp_c.is_none() {
             gpu_out.temp_c = thermal_out.gpu_temp_c;
@@ -118,7 +114,7 @@ impl Sampler {
 
         // 风扇：NVML/PDH 都没有时，用 WMI（OHM/旧版 LHM、ACPI）兜底。
         // 注意风扇读数与温度是两套独立通道，不能因为温度有值就假定风扇也有。
-        let fans = fan.sample(gpu_out.devices.len());
+        let fans = sources.fan.sample(gpu_out.devices.len());
         apply_cpu_fan(&mut cpu, &fans);
         apply_gpu_fan(&mut gpu_out, &fans);
 
@@ -208,14 +204,14 @@ fn collect_cpu(sys: &System) -> CpuInfo {
 }
 
 /// 把风扇报告里的 CPU 部分写进 `CpuInfo`
-fn apply_cpu_fan(cpu: &mut CpuInfo, fans: &fan::FanReport) {
+fn apply_cpu_fan(cpu: &mut CpuInfo, fans: &FanReport) {
     cpu.fan_rpm = fans.cpu.rpm;
     cpu.fan_pct = fans.cpu.pct;
     cpu.fan_source = fans.cpu.source.clone();
 }
 
 /// 把风扇报告里的 GPU 部分写进 `GpuInfo` 与各设备（仅在原生通道没给值时才覆盖）
-fn apply_gpu_fan(gpu: &mut GpuInfo, fans: &fan::FanReport) {
+fn apply_gpu_fan(gpu: &mut GpuInfo, fans: &FanReport) {
     for (i, dev) in gpu.devices.iter_mut().enumerate() {
         let Some(r) = fans.gpus.get(i) else { continue };
         if dev.fan_rpm.is_none() {
@@ -253,7 +249,7 @@ fn apply_gpu_fan(gpu: &mut GpuInfo, fans: &fan::FanReport) {
     }
 }
 
-fn collect_memory(sys: &System) -> MemoryInfo {
+fn collect_memory(sys: &System, extras: &dyn MemoryExtras) -> MemoryInfo {
     let mut info = MemoryInfo {
         total_bytes: sys.total_memory(),
         used_bytes: sys.used_memory(),
@@ -263,7 +259,8 @@ fn collect_memory(sys: &System) -> MemoryInfo {
         ..MemoryInfo::default()
     };
 
-    if let Some(status) = win32::memory_status() {
+    // 平台附加读数（Windows = GlobalMemoryStatusEx 的提交量 / 内存负载）
+    if let Some(status) = extras.memory_status() {
         info.system_load_pct = status.load_pct as f32;
         info.commit_used_bytes = status.commit_used_bytes;
         info.commit_limit_bytes = status.commit_limit_bytes;
@@ -311,7 +308,7 @@ fn collect_disks(disks: &Disks, elapsed_secs: f64) -> Vec<DiskInfo> {
 }
 
 /// GPU：多卡分别采样后再汇总出一览数据
-fn collect_gpu(probe: &mut gpu::GpuProbe) -> GpuInfo {
+fn collect_gpu(probe: &mut dyn GpuSource) -> GpuInfo {
     let (devices, source) = probe.sample();
     let mut info = GpuInfo {
         devices,

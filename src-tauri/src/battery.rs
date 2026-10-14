@@ -1,11 +1,16 @@
-//! 电池：把 Win32 原始读数整理成前端用的 BatteryInfo
+//! 电池：把各平台采集源给的原始读数（[`platform::RawBattery`]）整理成前端用的 BatteryInfo
+//!
+//! 本模块是**纯加工层**（无任何 OS 依赖）：单位换算、功率方向分派、状态文案
+//! 全部在这里，各平台的 `BatterySource` 实现只负责把原生接口的读数装进 RawBattery。
 
 use crate::model::BatteryInfo;
-use crate::win32;
+use crate::platform::RawBattery;
 
-pub fn collect() -> BatteryInfo {
-    let raw = win32::battery();
-
+/// 把原始电池读数加工成 BatteryInfo。
+///
+/// `percent_fallback`：主接口容量读数不可信时的电量百分比回退
+/// （Windows 上来自 GetSystemPowerStatus，由平台采集源一并传入）。
+pub fn from_raw(raw: RawBattery, percent_fallback: Option<f32>) -> BatteryInfo {
     if !raw.present {
         return BatteryInfo {
             has_battery: false,
@@ -36,9 +41,9 @@ pub fn collect() -> BatteryInfo {
         info.percent = Some(round1(raw.remaining_capacity_mwh as f32 * 100.0 / raw.max_capacity_mwh as f32));
     }
 
-    // 百分比回退：SYSTEM_BATTERY_STATE 容量无效时改用 GetSystemPowerStatus
+    // 百分比回退：主接口容量无效时用采集源给的备用百分比
     if info.percent.is_none() {
-        info.percent = win32::battery_percent();
+        info.percent = percent_fallback;
     }
 
     // 适配充电功率 / 放电功率
