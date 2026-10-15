@@ -152,11 +152,26 @@ function renderHeader(s) {
   setText("status-left", `已更新 ${fmtClock(s.tsMs)}`);
 }
 
+/* 环形进度的补间阈值（百分点）：低于它的变化直接落值，不补间。
+ *
+ * stroke-dashoffset 不是可合成属性——补间期间浏览器每帧都要重画这个 SVG，
+ * 实测 4 个环一起补间 ≈ 一个 CPU 核的 11%（同样工况下整页 1 秒一拍的全部开销约 2%）。
+ * 而 1 秒一拍的采样里，环的读数通常只挪几度，那种幅度本来也看不出补间，
+ * 所以只在「明显跳变」（打开大程序、跑分之类的突变）时才把补间放出来。 */
+const RING_ANIM_MIN_DELTA = 8;
+/** 各环上一次落值，用于判断本次变化幅度 */
+const ringPrev = new Map();
+
 function setRing(id, percent) {
   const el = document.getElementById(id);
   if (!el) return;
   const p = Math.max(0, Math.min(100, percent || 0));
+  const prev = ringPrev.get(id);
+  const animate = prev == null || Math.abs(p - prev) >= RING_ANIM_MIN_DELTA;
+  // 先定补间开关再写值：同一次样式重算里生效，"none" 会让本次更新立即到位
+  el.style.transition = animate ? "" : "none";
   el.style.strokeDashoffset = String(CIRCUMFERENCE * (1 - p / 100));
+  ringPrev.set(id, p);
 }
 
 /** 给风扇数值挂一个来源提示（鼠标悬停可见）。
@@ -209,7 +224,8 @@ function renderCores(perCore) {
     const cell = state.coreCells[i];
     if (!cell) return;
     const p = Math.max(0, Math.min(100, v));
-    cell.fill.style.width = `${p}%`;
+    // 长度走 transform 而不是 width（改 width 每次都要重排），详见 style.css 的 .core-fill
+    cell.fill.style.transform = `scaleX(${p / 100})`;
     cell.fill.style.background = p >= 85 ? "#ff5f6d" : p >= 60 ? "#f5c451" : "#4f8cff";
     cell.val.textContent = `${v.toFixed(0)}%`;
   });

@@ -16,6 +16,55 @@ const TOP_N: usize = 8;
 /// sysinfo 两次 CPU 刷新之间的最小间隔（官方常量约 200ms）
 const CPU_WARMUP_MS: u64 = 220;
 
+/// 进程刷新口径：只要进程榜用到的「占用率 + 内存」。
+///
+/// 默认的 `System::refresh_processes` 会额外做三件本工具一件都用不上的事，而它们在
+/// 大机器上非常贵（本机 i7-8750H / 3000+ 线程的桌面实测，单拍 70ms，占整拍耗时 3/4）：
+///
+/// * `tasks`：Linux 上把**每个线程**当成独立进程枚举（/proc/<pid>/task/*），
+///   本机 425 个进程被展开成 3177 条，每条都要读 stat / statm 并留一份结构体；
+/// * `disk_usage`：读每个进程的 /proc/<pid>/io（进程磁盘 IO 界面上没有这一项）；
+/// * `exe`：读 /proc/<pid>/exe 链接（进程名来自 stat/status，用不到可执行路径）。
+///
+/// 结果：单拍从 70ms 降到 10ms 量级，顺带把常驻的 Process 条目和打开的 procfs 文件
+/// 数量降到 1/7。⚠️ `nothing()` 的默认值里 `tasks` 仍是 **true**，必须显式关掉。
+fn process_refresh_kind() -> sysinfo::ProcessRefreshKind {
+    sysinfo::ProcessRefreshKind::nothing()
+        .with_cpu()
+        .with_memory()
+        .without_tasks()
+}
+
+/// 采样分阶段计时：设置 `PULSEDECK_TIMING=1` 时把每阶段耗时打到 stderr。
+///
+/// 用途是「怀疑某一拍变贵了」时定位到具体数据源（当年就是靠它发现进程刷新占了 3/4 的
+/// 采样耗时、NVMe 的 hwmon 一个芯片比其余芯片加起来还贵）。要拿有意义的数字得跑 release：
+///
+/// ```text
+/// PULSEDECK_TIMING=1 cargo test --release --lib smoke::collect_once -- --nocapture
+/// ```
+macro_rules! stage {
+    ($label:expr, $body:expr) => {{
+        let __t = Instant::now();
+        let __v = $body;
+        if timing_on() {
+            eprintln!(
+                "    {:<22}{:>8.2} ms",
+                $label,
+                __t.elapsed().as_secs_f64() * 1000.0
+            );
+        }
+        __v
+    }};
+}
+
+/// 分阶段计时的开关。环境变量只读一次：采样线程每拍要问十几次，
+/// 每次都去查环境（`getenv`）没必要。
+fn timing_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("PULSEDECK_TIMING").is_some())
+}
+
 struct Inner {
     sys: System,
     disks: Disks,
@@ -95,18 +144,21 @@ impl Sampler {
         } = &mut *inner;
 
         sys.refresh_cpu_all();
-        sys.refresh_memory();
-        sys.refresh_processes(ProcessesToUpdate::All, true);
-        disks.refresh(true);
-        net.refresh(true);
+        stage!("refresh_memory", sys.refresh_memory());
+        stage!(
+            "refresh_processes",
+            sys.refresh_processes_specifics(ProcessesToUpdate::All, true, process_refresh_kind())
+        );
+        stage!("disks.refresh", disks.refresh(true));
+        stage!("net.refresh", net.refresh(true));
 
-        let mut cpu = collect_cpu(sys);
-        let memory = collect_memory(sys, &*sources.memory_extras);
-        let disks_out = collect_disks(disks, elapsed_secs);
-        let battery_info: BatteryInfo = sources.battery.collect();
-        let net_out = collect_net(net, elapsed_secs);
-        let mut gpu_out = collect_gpu(&mut *sources.gpu);
-        let thermal_out: ThermalInfo = sources.thermal.sample();
+        let mut cpu = stage!("collect_cpu", collect_cpu(sys));
+        let memory = stage!("memory_extras", collect_memory(sys, &*sources.memory_extras));
+        let disks_out = stage!("collect_disks", collect_disks(disks, elapsed_secs));
+        let battery_info: BatteryInfo = stage!("battery", sources.battery.collect());
+        let net_out = stage!("collect_net", collect_net(net, elapsed_secs));
+        let mut gpu_out = stage!("gpu", collect_gpu(&mut *sources.gpu));
+        let thermal_out: ThermalInfo = stage!("thermal", sources.thermal.sample());
         // NVML 拿不到温度时（Intel / AMD 显卡）回退到硬件监控软件的读数
         if gpu_out.temp_c.is_none() {
             gpu_out.temp_c = thermal_out.gpu_temp_c;
@@ -114,14 +166,14 @@ impl Sampler {
 
         // 风扇：NVML/PDH 都没有时，用 WMI（OHM/旧版 LHM、ACPI）兜底。
         // 注意风扇读数与温度是两套独立通道，不能因为温度有值就假定风扇也有。
-        let fans = sources.fan.sample(gpu_out.devices.len());
+        let fans = stage!("fan", sources.fan.sample(gpu_out.devices.len()));
         apply_cpu_fan(&mut cpu, &fans);
         apply_gpu_fan(&mut gpu_out, &fans);
 
-        Snapshot {
+        let snap = Snapshot {
             ts_ms: now_ms(),
             sample_interval_ms: elapsed_ms,
-            system: collect_system(sys),
+            system: stage!("collect_system", collect_system(sys)),
             cpu,
             memory,
             disks: disks_out,
@@ -129,7 +181,15 @@ impl Sampler {
             gpu: gpu_out,
             net: net_out,
             thermal: thermal_out,
+        };
+        if timing_on() {
+            eprintln!(
+                "    {:<22}{:>8.2} ms  (总耗时)\n",
+                "collect",
+                tick_start.elapsed().as_secs_f64() * 1000.0
+            );
         }
+        snap
     }
 }
 

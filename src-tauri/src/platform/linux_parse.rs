@@ -50,6 +50,16 @@ pub fn is_gpu_chip(name: &str) -> bool {
     matches!(name, "amdgpu" | "nouveau" | "radeon" | "i915" | "xe" | "nvidia")
 }
 
+/// 这块芯片的温度值是否有必要读：界面上只展示 CPU 与显卡温度，
+/// 其余芯片（nvme、wifi、电池、机箱……）的温度读了也不会被选中。
+///
+/// 这不是可有可无的过滤——读 hwmon 温度是要花钱的，且各芯片差价极大：
+/// 本机（NVMe 的 hwmon）每读一次要往设备发一条 admin 命令，一个芯片就要 9ms，
+/// 比其余六个芯片加起来还贵一个数量级；过滤后整次 hwmon 扫描从 10ms 降到 1ms。
+pub fn temp_relevant_chip(name: &str) -> bool {
+    cpu_chip_rank(name).is_some() || is_gpu_chip(name)
+}
+
 /// 从 hwmon 芯片里挑 CPU 温度。
 ///
 /// coretemp 优先取 "Package id 0"（封装温度），否则取该芯片最高温；

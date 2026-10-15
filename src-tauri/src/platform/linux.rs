@@ -18,8 +18,8 @@ use std::time::Instant;
 use super::gpu_nvml::NvmlSource;
 use super::linux_parse::{
     amd_device, battery_convert, chip_reading, energy_delta_w, gpu_fan_readings, parse_meminfo,
-    pick_cpu_fan_chip, pick_cpu_temp, pick_gpu_temp, plausible_temp, AmdCardRaw, BatteryRaw,
-    FanPick, HwmonChip,
+    pick_cpu_fan_chip, pick_cpu_temp, pick_gpu_temp, plausible_temp, temp_relevant_chip, AmdCardRaw,
+    BatteryRaw, FanPick, HwmonChip,
 };
 use super::{
     BatterySource, FanReading, FanReport, FanSource, GpuSource, MemoryExtras, MemoryStatus,
@@ -102,15 +102,19 @@ fn scan_chip(dir: &Path) -> HwmonChip {
     fan_idx.sort_by_key(|(n, _)| *n);
     pwm_idx.sort_by_key(|(n, _)| *n);
 
-    for (n, path) in temp_idx {
-        let Some(milli) = read_num::<i64>(&path) else {
-            continue;
-        };
-        let Some(c) = plausible_temp(milli as f32 / 1000.0) else {
-            continue;
-        };
-        let label = read_str(&dir.join(format!("temp{n}_label"))).unwrap_or_default();
-        chip.temps.push((label, c));
+    // 温度只读「可能被选中」的芯片（CPU / 显卡，见 temp_relevant_chip 的成本说明）——
+    // 其余芯片（nvme、wifi、电池……）的温度读了也不会显示，白等 IO
+    if temp_relevant_chip(&chip.name) {
+        for (n, path) in temp_idx {
+            let Some(milli) = read_num::<i64>(&path) else {
+                continue;
+            };
+            let Some(c) = plausible_temp(milli as f32 / 1000.0) else {
+                continue;
+            };
+            let label = read_str(&dir.join(format!("temp{n}_label"))).unwrap_or_default();
+            chip.temps.push((label, c));
+        }
     }
     for (_, path) in fan_idx {
         chip.fans.push(read_num::<f32>(&path).unwrap_or(0.0));

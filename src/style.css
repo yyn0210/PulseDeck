@@ -732,6 +732,10 @@ select option:hover {
   stroke: var(--cpu);
   stroke-dasharray: 326.73;
   stroke-dashoffset: 326.73;
+  /* 补间默认开着，但**由 JS 按需开关**（main.js 的 setRing）：stroke-dashoffset
+   * 不是可合成属性，每一帧都要重画一遍 SVG，实测 4 个环一起补间 ≈ 一个核的 11%
+   * （整页 1 秒一拍的总开销才 2%）。所以只有「明显跳变」那一拍才补间，
+   * 每秒几度的小步变化直接落值——那种幅度本来也看不出补间。 */
   transition: stroke-dashoffset 0.45s cubic-bezier(0.4, 0, 0.2, 1), stroke 0.3s ease;
   filter: drop-shadow(0 0 6px currentColor);
 }
@@ -946,10 +950,16 @@ select option:hover {
 
 .core-fill {
   height: 100%;
-  width: 0%;
-  border-radius: 3px;
+  /* 长度走 transform 而不是 width：改 width 每次都要重排（transform 只重画）。
+   * 父级 .core-bar 有 overflow:hidden + 圆角，圆角由父级裁出来，这里不用再描。
+   *
+   * **不加补间**：核条每秒都变，补间就是每秒几十帧的重绘——实测 12 个核补间要
+   * 多花一个核的 4%（渲染进程）+ 同等量级的主进程合成开销，而 1 秒一拍的读数
+   * 本来也不需要插值（看数值就知道趋势）。上一版的 width 补间更贵：18%。 */
+  width: 100%;
+  transform-origin: left center;
+  transform: scaleX(0);
   background: var(--cpu);
-  transition: width 0.35s ease;
 }
 
 .core-val {
