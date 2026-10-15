@@ -1,31 +1,16 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import {
-  esc,
-  fmtBytes,
-  fmtClock,
-  fmtDuration,
-  fmtFan,
-  fmtFreq,
-  fmtRate,
-  fmtUptime,
-  fmtWatts,
-  setText,
-} from "./modules/format.js";
-import { LineChart } from "./modules/charts.js";
+import { esc, fmtClock, fmtUptime, setText } from "./modules/format.js";
+import { Dashboard } from "./modules/dashboard.js";
+import * as layout from "./modules/layout.js";
+import { initEditmode } from "./modules/editmode.js";
 
 /* ---------------- 常量 / 状态 ---------------- */
-
-const RING_RADIUS = 52;
-const CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
-const HISTORY_MAX = 240;
 
 const state = {
   paused: false,
   intervalMs: 1000,
   timer: null,
-  coreCells: [],
-  coreCount: 0,
   failures: 0,
   latest: null,
   // 是否把无流量的网卡也列出来
@@ -36,26 +21,20 @@ const state = {
 
 const banner = document.getElementById("banner");
 
-/* ---------------- 图表 ---------------- */
-
-const chart = new LineChart(document.getElementById("trend-chart"), {
-  max: HISTORY_MAX,
-  ceiling: 100,
-  series: [
-    { key: "cpu", color: "#4f8cff", fill: true },
-    { key: "mem", color: "#22d3a5" },
-  ],
-});
-
-const netChart = new LineChart(document.getElementById("net-chart"), {
-  max: HISTORY_MAX,
-  autoCeiling: true,
-  // 至少保留 256 KB/s 的量程，空闲时不至于把零星毛刺放大成锯齿
-  minCeiling: 256 * 1024,
-  series: [
-    { key: "rx", color: "#3ddc84", fill: true },
-    { key: "tx", color: "#ffd166" },
-  ],
+/* ---------------- 监控页小组件面板 ----------------
+ * 卡片全部组件化（src/widgets/），按布局配置（localStorage pd.layout）挂载；
+ * 渲染循环只负责把快照分发给在场的组件。布局编辑（拖拽 / 缩放 / 增删）见 editmode.js。 */
+const gridEl = document.getElementById("grid");
+const dashboard = new Dashboard(gridEl);
+dashboard.onchange = (list) => layout.save(list);
+dashboard.mountAll(layout.load());
+initEditmode({
+  dashboard,
+  grid: gridEl,
+  editBtn: document.getElementById("edit-btn"),
+  editbar: document.getElementById("editbar"),
+  chipsEl: document.getElementById("editbar-chips"),
+  resetBtn: document.getElementById("edit-reset"),
 });
 
 /* ---------------- 主循环 ---------------- */
@@ -116,19 +95,8 @@ function schedule() {
 
 function render(s) {
   renderHeader(s);
-  renderCpu(s.cpu);
-  renderMemory(s.memory);
-  renderGpu(s.gpu, s.thermal);
-  renderBattery(s.battery, s.thermal);
-  renderNet(s.net);
-  renderThermal(s.thermal, s.cpu, s.gpu);
-  renderDisks(s.disks);
-  renderProcs(s.cpu);
-
-  chart.push({ cpu: s.cpu.usageTotal, mem: s.memory.usagePct });
-  chart.draw();
-  netChart.push({ rx: s.net.rxBytesPerSec, tx: s.net.txBytesPerSec });
-  netChart.draw();
+  dashboard.updateAll(s, { showIdleIface: state.showIdleIface });
+  renderThermalHint(s);
 
   // 设置页可见时才刷新高级采集状态，避免在监控页做无谓 DOM 写入
   if (!viewSettings.classList.contains("hidden")) {
@@ -150,221 +118,6 @@ function renderHeader(s) {
   setText("sample-interval", `${s.sampleIntervalMs} ms`);
   setText("sample-tag", `${s.sampleIntervalMs} ms`);
   setText("status-left", `已更新 ${fmtClock(s.tsMs)}`);
-}
-
-/* 环形进度的补间阈值（百分点）：低于它的变化直接落值，不补间。
- *
- * stroke-dashoffset 不是可合成属性——补间期间浏览器每帧都要重画这个 SVG，
- * 实测 4 个环一起补间 ≈ 一个 CPU 核的 11%（同样工况下整页 1 秒一拍的全部开销约 2%）。
- * 而 1 秒一拍的采样里，环的读数通常只挪几度，那种幅度本来也看不出补间，
- * 所以只在「明显跳变」（打开大程序、跑分之类的突变）时才把补间放出来。 */
-const RING_ANIM_MIN_DELTA = 8;
-/** 各环上一次落值，用于判断本次变化幅度 */
-const ringPrev = new Map();
-
-function setRing(id, percent) {
-  const el = document.getElementById(id);
-  if (!el) return;
-  const p = Math.max(0, Math.min(100, percent || 0));
-  const prev = ringPrev.get(id);
-  const animate = prev == null || Math.abs(p - prev) >= RING_ANIM_MIN_DELTA;
-  // 先定补间开关再写值：同一次样式重算里生效，"none" 会让本次更新立即到位
-  el.style.transition = animate ? "" : "none";
-  el.style.strokeDashoffset = String(CIRCUMFERENCE * (1 - p / 100));
-  ringPrev.set(id, p);
-}
-
-/** 给风扇数值挂一个来源提示（鼠标悬停可见）。
- * 来源字符串来自后端 `FanReading::source`，例如「联想 EC（上限 4500 RPM）」。
- * 空字符串或缺失时清掉 title，避免出现空白浮层。 */
-function setFanSource(id, source) {
-  const el = document.getElementById(id);
-  if (!el) return;
-  const text = typeof source === "string" ? source.trim() : "";
-  if (text) {
-    el.title = `来源：${text}`;
-  } else {
-    el.removeAttribute("title");
-  }
-}
-
-/** 切换一行「附加信息」：items 为空就把整行藏起来。
- * 值里的每段用 ` · ` 连接（`.kv li b` 是单行 + 省略号，不会撑破卡片）。 */
-function toggleRow(rowId, items) {
-  const row = document.getElementById(rowId);
-  if (!row) return;
-  const value = row.querySelector("b");
-  if (value) value.textContent = items.join(" · ");
-  row.classList.toggle("hidden", items.length === 0);
-}
-
-function renderCpu(cpu) {
-  setRing("cpu-ring", cpu.usageTotal);
-  setText("cpu-value", cpu.usageTotal.toFixed(1));
-  setText("cpu-brand", cpu.brand);
-  setText(
-    "cpu-cores",
-    `${cpu.physicalCores} 核 / ${cpu.logicalCores} 线程`,
-  );
-  setText("cpu-freq", fmtFreq(cpu.freqMhz));
-  setText("cpu-fan", fmtFan(cpu.fanRpm, cpu.fanPct));
-  setFanSource("cpu-fan", cpu.fanSource);
-  setText("cpu-tag", `峰值 ${Math.max(...cpu.perCore, 0).toFixed(0)}%`);
-  renderCores(cpu.perCore);
-}
-
-function renderCores(perCore) {
-  const grid = document.getElementById("core-grid");
-  if (perCore.length !== state.coreCount) {
-    state.coreCount = perCore.length;
-    state.coreCells = [];
-    grid.innerHTML = perCore
-      .map((_, i) => {
-        const name = perCore.length > 64 ? `${i}` : `CPU${i}`;
-        return `<div class="core"><span class="core-name">${esc(name)}</span>
-          <div class="core-bar"><div class="core-fill"></div></div>
-          <span class="core-val">0%</span></div>`;
-      })
-      .join("");
-    state.coreCells = Array.from(grid.querySelectorAll(".core")).map((el) => ({
-      fill: el.querySelector(".core-fill"),
-      val: el.querySelector(".core-val"),
-    }));
-  }
-  perCore.forEach((v, i) => {
-    const cell = state.coreCells[i];
-    if (!cell) return;
-    const p = Math.max(0, Math.min(100, v));
-    // 长度走 transform 而不是 width（改 width 每次都要重排），详见 style.css 的 .core-fill
-    cell.fill.style.transform = `scaleX(${p / 100})`;
-    cell.fill.style.background = p >= 85 ? "#ff5f6d" : p >= 60 ? "#f5c451" : "#4f8cff";
-    cell.val.textContent = `${v.toFixed(0)}%`;
-  });
-}
-
-function renderMemory(mem) {
-  setRing("mem-ring", mem.usagePct);
-  setText("mem-value", mem.usagePct.toFixed(1));
-  setText("mem-used", `${fmtBytes(mem.usedBytes)} / ${fmtBytes(mem.totalBytes)}`);
-  setText("mem-avail", fmtBytes(mem.availableBytes));
-  setText(
-    "mem-commit",
-    mem.commitLimitBytes
-      ? `${fmtBytes(mem.commitUsedBytes)} / ${fmtBytes(mem.commitLimitBytes)}`
-      : "--",
-  );
-  const swap = mem.swapTotalBytes
-    ? ` · 页面文件 ${fmtBytes(mem.swapUsedBytes)}/${fmtBytes(mem.swapTotalBytes)}`
-    : "";
-  setText("mem-tag", `${fmtBytes(mem.totalBytes)}${swap}`);
-}
-
-/* ---------------- GPU ---------------- */
-
-// 各数据源在界面上的名字。Windows：NVML（N 卡）/ 性能计数器（核显、A 卡）；
-// Linux：NVML（N 卡）/ 显卡驱动 sysfs（amdgpu、i915、xe）
-const GPU_SOURCE_LABEL = {
-  nvml: "NVIDIA 驱动",
-  pdh: "Windows 计数器",
-  "pdh-warming": "正在初始化",
-  amdgpu: "AMD 驱动",
-  amd: "AMD 驱动",
-  i915: "Intel 驱动",
-  xe: "Intel 驱动",
-  intel: "Intel 驱动",
-};
-
-function gpuSourceText(gpu) {
-  if (!gpu.available) return GPU_SOURCE_LABEL[gpu.source] || "无可用数据源";
-  const labels = [...new Set(gpu.devices.map((d) => GPU_SOURCE_LABEL[d.source] || d.source))];
-  const multi = gpu.devices.length > 1 ? ` · ${gpu.devices.length} 块显卡` : "";
-  return `${labels.join(" + ")}${multi}`;
-}
-
-/** 一块卡在「其它显卡」行里的短描述：名字 + 占用（读不到就 --） */
-function gpuBrief(d) {
-  const usage = d.usagePct != null ? `${d.usagePct.toFixed(0)}%` : "--";
-  return `${d.name} ${usage}`;
-}
-
-function renderGpu(gpu, thermal) {
-  const usage = gpu.usagePct;
-  if (!gpu.available) {
-    setRing("gpu-ring", 0);
-    setText("gpu-value", "--");
-    setText("gpu-label", "未检测到");
-    setText("gpu-name", "--");
-    setText("gpu-mem", "--");
-    setText("gpu-temp", "--");
-    setText("gpu-power", "--");
-    setText("gpu-fan", "--");
-    toggleRow("gpu-others-row", []);
-    setText("gpu-tag", "无可用数据源");
-    return;
-  }
-
-  setRing("gpu-ring", usage ?? 0);
-  setText("gpu-value", usage != null ? usage.toFixed(0) : "--");
-  setText("gpu-label", usage != null ? "显卡占用" : "占用未知");
-
-  // 型号显示**主卡**（后端按 mainIndex 指明）—— 上面的数字就是这块卡的，
-  // 别拿列表第一块充数：多显卡时两者常常不是同一块（详见 model.rs 的挑卡规则）
-  const main = gpu.devices.find((d) => d.index === gpu.mainIndex) || gpu.devices[0];
-  setText("gpu-name", main ? main.name : "--");
-  setText(
-    "gpu-mem",
-    gpu.memTotalBytes
-      ? `${fmtBytes(gpu.memUsedBytes)} / ${fmtBytes(gpu.memTotalBytes)}`
-      : gpu.memUsedBytes
-        ? fmtBytes(gpu.memUsedBytes)
-        : "--",
-  );
-  setText("gpu-temp", gpu.tempC != null ? `${gpu.tempC.toFixed(0)} °C` : "--");
-  setText("gpu-power", fmtWatts(gpu.powerW));
-  // 风扇：优先真实 RPM，其次驱动给的占空比；拿不到就是 --
-  setText("gpu-fan", fmtFan(gpu.fanRpm, gpu.fanPct));
-  setFanSource("gpu-fan", gpu.fanSource);
-
-  // 主卡之外的卡单列一行（笔记本的核显、多卡机器的第二块），不然它们只体现在
-  // 「N 块显卡」这几个字里，等于没展示
-  const others = gpu.devices.filter((d) => main && d.index !== main.index);
-  toggleRow("gpu-others-row", others.map(gpuBrief));
-
-  setText("gpu-tag", gpuSourceText(gpu));
-}
-
-/* ---------------- 网络 ---------------- */
-
-function renderNet(net) {
-  setText("net-rx", fmtBytes(net.rxBytesPerSec));
-  setText("net-tx", fmtBytes(net.txBytesPerSec));
-  setText(
-    "net-total",
-    `↓ ${fmtBytes(net.totalReceived)} · ↑ ${fmtBytes(net.totalTransmitted)}`,
-  );
-
-  const list = net.interfaces.filter(
-    (i) => state.showIdleIface || i.isVirtual === false,
-  );
-  const box = document.getElementById("iface-list");
-  box.innerHTML = list.length
-    ? list
-        .map(
-          (i) => `
-      <div class="iface ${i.rxBytesPerSec + i.txBytesPerSec > 0 ? "active" : ""}">
-        <span class="iface-name">
-          <span title="${esc(i.name)}">${esc(i.name)}</span>
-          ${i.isVirtual ? '<i class="iface-vtag">虚拟</i>' : ""}
-        </span>
-        <span class="iface-rate">
-          <b class="rx">↓${fmtRate(i.rxBytesPerSec)}</b>
-          <b class="tx">↑${fmtRate(i.txBytesPerSec)}</b>
-        </span>
-        <span class="iface-total">↓${fmtBytes(i.totalReceived)} ↑${fmtBytes(i.totalTransmitted)}</span>
-      </div>`,
-        )
-        .join("")
-    : `<div class="iface"><span class="iface-name">未检测到网卡</span></div>`;
 }
 
 /* ---------------- 温度 ---------------- */
@@ -559,8 +312,9 @@ function renderPawnioTip() {
   if (!show) setTipConfirm(false);
 }
 
-function renderThermal(thermal, cpu, gpu) {
-  setText("cpu-temp", thermal.cpuTempC != null ? `${thermal.cpuTempC.toFixed(0)} °C` : "--");
+/* 设置页「高级采集」下方的温度 / 风扇说明（CPU 卡片上的温度读数在 cpu 组件里）。 */
+function renderThermalHint(snap) {
+  const { thermal, cpu, gpu } = snap;
   const el = document.getElementById("thermal-hint");
 
   // 温度不可用 → 优先走原来那套提示（可能带「安装 PawnIO」按钮）
@@ -635,7 +389,7 @@ function renderThermalUnavailable(el, thermal) {
 async function installPawnIo() {
   if (pawnioBusy) return;
   pawnioBusy = true;
-  if (state.latest) renderThermal(state.latest.thermal, state.latest.cpu, state.latest.gpu);
+  if (state.latest) renderThermalHint(state.latest);
   try {
     await invoke("install_pawnio");
   } catch (e) {
@@ -648,7 +402,7 @@ async function installPawnIo() {
     if (pawnio && pawnio.installed) break;
   }
   pawnioBusy = false;
-  if (state.latest) renderThermal(state.latest.thermal, state.latest.cpu, state.latest.gpu);
+  if (state.latest) renderThermalHint(state.latest);
 }
 
 /** 请求后端启用高级采集（联想机型读风扇转速需要管理员权限）。
@@ -656,7 +410,7 @@ async function installPawnIo() {
 async function enableElevated() {
   if (pawnioBusy) return;
   pawnioBusy = true;
-  if (state.latest) renderThermal(state.latest.thermal, state.latest.cpu, state.latest.gpu);
+  if (state.latest) renderThermalHint(state.latest);
   try {
     await invoke("enable_elevated");
   } catch (e) {
@@ -671,146 +425,7 @@ async function enableElevated() {
   }
   await refreshPawnioStatus();
   pawnioBusy = false;
-  if (state.latest) renderThermal(state.latest.thermal, state.latest.cpu, state.latest.gpu);
-}
-
-function renderBattery(bat, thermal) {
-  const percent = bat.percent ?? 0;
-  if (!bat.hasBattery) {
-    setRing("bat-ring", 0);
-    setText("bat-value", "--");
-    setText("bat-label", "无电池");
-    setText("bat-energy", "--");
-    setText("bat-remain", "--");
-    setText("bat-tofull", "--");
-    setText("bat-status", bat.acOnline ? "交流供电" : "未检测到");
-    setRingValue0();
-  } else {
-    setRing("bat-ring", percent);
-    setText("bat-value", percent.toFixed(0));
-    setText("bat-label", bat.charging ? "充电中" : bat.discharging ? "放电中" : "待机");
-    setText(
-      "bat-energy",
-      bat.remainingWh != null
-        ? `${bat.remainingWh.toFixed(1)} / ${(bat.fullChargeWh ?? 0).toFixed(1)} Wh`
-        : "--",
-    );
-    setText("bat-remain", fmtDuration(bat.secondsToEmpty));
-    setText("bat-tofull", fmtDuration(bat.secondsToFull));
-    setText("bat-status", bat.statusText || "--");
-  }
-
-  // 电源功率：优先「充入电池」的功率，其次「电池输出」的功率。
-  // 适配器在供电但电池既不充也不放（多数笔记本满电后的常态）时明确给 0，
-  // 避免整块卡片只有一个 “--”；CPU 封装功耗作为独立的实时功耗参考放在副行。
-  const liveW = bat.chargeRateW ?? bat.dischargeRateW ?? (bat.acOnline ? 0 : null);
-  setText("power-value", liveW != null ? liveW.toFixed(1) : "--");
-  setText("cpu-power-value", fmtWatts(thermal?.cpuPowerW));
-  setText("bat-power-state", batteryStateLabel(bat));
-  setText("ac-status", bat.acOnline ? "已接入适配器" : "电池供电");
-  setText("power-source", bat.source || "--");
-  setText("power-hint", powerHint(bat, thermal));
-}
-
-// 电池侧状态：任何情况都能给出文案，不会留空
-function batteryStateLabel(bat) {
-  if (!bat.hasBattery) return "无电池";
-  if (bat.charging) return "充电中";
-  if (bat.discharging) return bat.acOnline ? "微放电" : "放电中";
-  return bat.acOnline ? "未充电" : "待机";
-}
-
-// 电源卡片说明：覆盖「充电 / 已接入未充电 / 电池供电」全部状态
-function powerHint(bat, thermal) {
-  const cpu =
-    thermal?.cpuPowerW != null ? `；CPU 封装功耗 ${thermal.cpuPowerW.toFixed(1)} W` : "";
-  if (!bat.hasBattery) return "本机未检测到电池，无法读取充放电功率";
-  if (bat.charging && bat.chargeRateW != null) {
-    return `适配器正在以 ${bat.chargeRateW.toFixed(1)} W 向电池充电${cpu}`;
-  }
-  if (bat.charging) return `正在充电，但固件未上报充入功率${cpu}`;
-  if (bat.acOnline) {
-    const out =
-      bat.dischargeRateW != null ? `，电池轻微放电 ${bat.dischargeRateW.toFixed(1)} W` : "";
-    return `适配器已接入，当前未向电池充电${out}${cpu}`;
-  }
-  if (bat.dischargeRateW != null) {
-    return `未接入适配器，电池放电 ${bat.dischargeRateW.toFixed(1)} W${cpu}`;
-  }
-  return `电池供电中，固件未上报放电功率${cpu}`;
-}
-
-function setRingValue0() {
-  const el = document.getElementById("bat-ring");
-  if (el) el.style.strokeDashoffset = String(CIRCUMFERENCE);
-}
-
-function renderDisks(disks) {
-  const list = document.getElementById("disk-list");
-  if (!disks.length) {
-    list.innerHTML = `<div class="disk">未检测到任何卷</div>`;
-    setText("disk-tag", "0 个卷");
-    return;
-  }
-  list.innerHTML = disks
-    .map(
-      (d) => `
-      <div class="disk">
-        <div class="disk-head">
-          <span class="disk-title">${esc(d.mountPoint)} ${esc(d.name)}</span>
-          <span class="disk-kind">${esc(d.fileSystem)} · ${esc(d.diskKind)}${
-            d.removable ? " · 可移动" : ""
-          }</span>
-        </div>
-        <div class="disk-bar"><div class="disk-fill" style="width:${Math.min(
-          100,
-          d.usagePct,
-        )}%"></div></div>
-        <div class="disk-meta">
-          <span>已用 <b>${fmtBytes(d.usedBytes)}</b></span>
-          <span>可用 <b>${fmtBytes(d.freeBytes)}</b></span>
-          <span>共 <b>${fmtBytes(d.totalBytes)}</b></span>
-          <span class="io-read">读 <b>${fmtRate(d.readBytesPerSec)}</b></span>
-          <span class="io-write">写 <b>${fmtRate(d.writeBytesPerSec)}</b></span>
-          <span>累计 <b>${fmtBytes(d.totalReadBytes)} / ${fmtBytes(d.totalWrittenBytes)}</b></span>
-        </div>
-      </div>`,
-    )
-    .join("");
-  setText("disk-tag", `${disks.length} 个卷`);
-}
-
-/**
- * 进程表格行。两榜的列序不同——排序依据那一列在前（CPU 榜「CPU、内存」，
- * 内存榜「内存、CPU」），index.html 里的表头就是这么写的，这里必须同序输出，
- * 否则数值会跟表头错位；排序列加 `.lead` 提亮。
- */
-function procRows(rows, sortKey) {
-  if (!rows.length) return `<tr><td colspan="5">暂无数据</td></tr>`;
-  const cells = {
-    cpuUsage: (p, lead) => `<td class="${lead ? "lead" : ""}">${p.cpuUsage.toFixed(1)}%</td>`,
-    memoryBytes: (p, lead) =>
-      `<td class="${lead ? "lead" : ""}">${fmtBytes(p.memoryBytes)}</td>`,
-  };
-  const otherKey = sortKey === "cpuUsage" ? "memoryBytes" : "cpuUsage";
-  return rows
-    .map(
-      (p, i) => `
-      <tr>
-        <td>${i + 1}</td>
-        <td class="pname">${esc(p.name)}</td>
-        <td>${p.pid}</td>
-        ${cells[sortKey](p, true)}
-        ${cells[otherKey](p, false)}
-      </tr>`,
-    )
-    .join("");
-}
-
-function renderProcs(cpu) {
-  document.getElementById("top-cpu-body").innerHTML = procRows(cpu.topCpu, "cpuUsage");
-  document.getElementById("top-mem-body").innerHTML = procRows(cpu.topMem, "memoryBytes");
-  setText("proc-tag", `Top ${Math.max(cpu.topCpu.length, cpu.topMem.length)} · 取占用最高者`);
+  if (state.latest) renderThermalHint(state.latest);
 }
 
 /* ---------------- 交互 ---------------- */
@@ -837,8 +452,8 @@ intervalSelect.addEventListener("change", async () => {
     console.error(e);
   }
   state.intervalMs = ms;
-  chart.max = ms >= 2000 ? 120 : 240;
-  netChart.max = chart.max;
+  // 图表横轴长度跟着间隔走（≥2s 时窗口减半），转发给持有图表的组件
+  dashboard.setInterval(ms);
   schedule();
 });
 
@@ -882,7 +497,8 @@ async function initSettings() {
 
   idleIface.addEventListener("change", () => {
     state.showIdleIface = idleIface.checked;
-    if (state.latest) renderNet(state.latest.net);
+    // 立即按新口径补刷一遍（net 组件在 update 里读 ctx.showIdleIface）
+    if (state.latest) dashboard.updateAll(state.latest, { showIdleIface: state.showIdleIface });
   });
 }
 

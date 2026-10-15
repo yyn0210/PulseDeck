@@ -110,3 +110,9 @@ export function setText(id, value) {
   const el = document.getElementById(id);
   if (el) el.textContent = value;
 }
+
+/** 在指定子树内按选择器查找并写文本（监控小组件的模板更新用，查找范围限定在组件根内）。 */
+export function setTextIn(root, selector, value) {
+  const el = root.querySelector(selector);
+  if (el) el.textContent = value;
+}

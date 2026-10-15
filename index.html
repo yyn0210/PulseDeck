@@ -69,6 +69,7 @@
             <span class="meta-value" id="sample-interval">--</span>
             <span class="meta-label">采样间隔</span>
           </div>
+          <button id="edit-btn" class="btn">编辑布局</button>
           <button id="pause-btn" class="btn">暂停</button>
         </div>
       </header>
@@ -96,214 +97,18 @@
       </div>
 
       <!-- ================= 监控页 ================= -->
-      <main class="grid" id="view-monitor">
-        <!-- CPU -->
-        <section class="card card-ring" data-accent="cpu">
-          <header class="card-head">
-            <h2>处理器</h2>
-            <span class="tag" id="cpu-tag">--</span>
-          </header>
-          <div class="ring-wrap">
-            <div class="ring">
-              <svg viewBox="0 0 120 120">
-                <circle class="ring-bg" cx="60" cy="60" r="52"></circle>
-                <circle class="ring-fg" id="cpu-ring" cx="60" cy="60" r="52"></circle>
-              </svg>
-              <div class="ring-center">
-                <span class="ring-value" id="cpu-value">0<i>%</i></span>
-                <span class="ring-label">总占用</span>
-              </div>
-            </div>
-            <ul class="kv">
-              <li><span>型号</span><b id="cpu-brand">--</b></li>
-              <li><span>核心 / 线程</span><b id="cpu-cores">--</b></li>
-              <li><span>当前主频</span><b id="cpu-freq">--</b></li>
-              <li><span>温度</span><b id="cpu-temp">--</b></li>
-              <li><span>风扇</span><b id="cpu-fan">--</b></li>
-            </ul>
-          </div>
-        </section>
-
-        <!-- 内存 -->
-        <section class="card card-ring" data-accent="mem">
-          <header class="card-head">
-            <h2>内存</h2>
-            <span class="tag" id="mem-tag">--</span>
-          </header>
-          <div class="ring-wrap">
-            <div class="ring">
-              <svg viewBox="0 0 120 120">
-                <circle class="ring-bg" cx="60" cy="60" r="52"></circle>
-                <circle class="ring-fg" id="mem-ring" cx="60" cy="60" r="52"></circle>
-              </svg>
-              <div class="ring-center">
-                <span class="ring-value" id="mem-value">0<i>%</i></span>
-                <span class="ring-label">已使用</span>
-              </div>
-            </div>
-            <ul class="kv">
-              <li><span>已用 / 总量</span><b id="mem-used">--</b></li>
-              <li><span>可用</span><b id="mem-avail">--</b></li>
-              <li><span>已提交</span><b id="mem-commit">--</b></li>
-            </ul>
-          </div>
-        </section>
-
-        <!-- 电池 -->
-        <section class="card card-ring" data-accent="bat">
-          <header class="card-head">
-            <h2>电池</h2>
-            <span class="tag" id="bat-status">--</span>
-          </header>
-          <div class="ring-wrap">
-            <div class="ring">
-              <svg viewBox="0 0 120 120">
-                <circle class="ring-bg" cx="60" cy="60" r="52"></circle>
-                <circle class="ring-fg" id="bat-ring" cx="60" cy="60" r="52"></circle>
-              </svg>
-              <div class="ring-center">
-                <span class="ring-value" id="bat-value">--</span>
-                <span class="ring-label" id="bat-label">暂无电池</span>
-              </div>
-            </div>
-            <ul class="kv">
-              <li><span>剩余 / 满充</span><b id="bat-energy">--</b></li>
-              <li><span>剩余续航</span><b id="bat-remain">--</b></li>
-              <li><span>充满需要</span><b id="bat-tofull">--</b></li>
-            </ul>
-          </div>
-        </section>
-
-        <!-- GPU -->
-        <section class="card card-ring" data-accent="gpu">
-          <header class="card-head">
-            <h2>GPU</h2>
-            <span class="tag" id="gpu-tag">--</span>
-          </header>
-          <div class="ring-wrap">
-            <div class="ring">
-              <svg viewBox="0 0 120 120">
-                <circle class="ring-bg" cx="60" cy="60" r="52"></circle>
-                <circle class="ring-fg" id="gpu-ring" cx="60" cy="60" r="52"></circle>
-              </svg>
-              <div class="ring-center">
-                <span class="ring-value" id="gpu-value">--</span>
-                <span class="ring-label" id="gpu-label">显卡占用</span>
-              </div>
-            </div>
-            <ul class="kv">
-              <li><span>型号</span><b id="gpu-name">--</b></li>
-              <li><span>显存</span><b id="gpu-mem">--</b></li>
-              <li><span>温度</span><b id="gpu-temp">--</b></li>
-              <li><span>功耗</span><b id="gpu-power">--</b></li>
-              <li><span>风扇</span><b id="gpu-fan">--</b></li>
-              <!-- 主卡之外的显卡（笔记本核显 / 多卡机器的第二块），只有一块卡时整行隐藏 -->
-              <li id="gpu-others-row" class="hidden"><span>其它显卡</span><b>--</b></li>
-            </ul>
-          </div>
-        </section>
-
-        <!-- 电源功率 -->
-        <section class="card card-power" data-accent="power">
-          <header class="card-head">
-            <h2>电源功率</h2>
-            <span class="tag" id="power-source">--</span>
-          </header>
-          <div class="power-body">
-            <div class="power-main">
-              <span class="power-value" id="power-value">0.0</span>
-              <span class="power-unit">W</span>
-            </div>
-            <p class="power-hint" id="power-hint">等待数据…</p>
-            <div class="power-row">
-              <div>
-                <span class="power-sub-label">CPU 功耗</span>
-                <b id="cpu-power-value">--</b>
-              </div>
-              <div>
-                <span class="power-sub-label">电池</span>
-                <b id="bat-power-state">--</b>
-              </div>
-              <div>
-                <span class="power-sub-label">电源</span>
-                <b id="ac-status">--</b>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <!-- 网络 -->
-        <section class="card card-net" data-accent="net">
-          <header class="card-head">
-            <h2>网络</h2>
-            <div class="legend">
-              <span><i class="dot rx"></i>下行</span>
-              <span><i class="dot tx"></i>上行</span>
-            </div>
-          </header>
-          <div class="net-head">
-            <div class="net-rate">
-              <span class="net-arrow down">↓</span>
-              <span class="net-value" id="net-rx">--</span>
-              <span class="net-unit">/s</span>
-            </div>
-            <div class="net-rate">
-              <span class="net-arrow up">↑</span>
-              <span class="net-value" id="net-tx">--</span>
-              <span class="net-unit">/s</span>
-            </div>
-            <div class="net-total">
-              <span class="net-total-label">累计流量</span>
-              <b id="net-total">--</b>
-            </div>
-          </div>
-          <canvas id="net-chart" class="chart net-chart"></canvas>
-          <div class="iface-list" id="iface-list"></div>
-        </section>
-
-        <!-- CPU 详情 -->
-        <section class="card span-7">
-          <header class="card-head">
-            <h2>CPU 占用趋势 与 每核负载</h2>
-            <div class="legend">
-              <span><i class="dot cpu"></i>CPU</span>
-              <span><i class="dot mem"></i>内存</span>
-            </div>
-          </header>
-          <canvas id="trend-chart" class="chart"></canvas>
-          <div class="core-grid" id="core-grid"></div>
-        </section>
-
-        <!-- 磁盘 -->
-        <section class="card span-5">
-          <header class="card-head">
-            <h2>硬盘</h2>
-            <span class="tag" id="disk-tag">--</span>
-          </header>
-          <div class="disk-list" id="disk-list"></div>
-        </section>
-
-        <!-- 进程 -->
-        <section class="card span-12">
-          <header class="card-head">
-            <h2>资源占用 Top 进程</h2>
-            <span class="tag" id="proc-tag">--</span>
-          </header>
-          <div class="proc-tables">
-            <table class="proc-table">
-              <thead>
-                <tr><th>#</th><th>进程</th><th>PID</th><th>CPU</th><th>内存</th></tr>
-              </thead>
-              <tbody id="top-cpu-body"></tbody>
-            </table>
-            <table class="proc-table">
-              <thead>
-                <tr><th>#</th><th>进程</th><th>PID</th><th>内存</th><th>CPU</th></tr>
-              </thead>
-              <tbody id="top-mem-body"></tbody>
-            </table>
-          </div>
-        </section>
+      <!-- 卡片全部组件化（src/widgets/），由 dashboard.js 按布局配置动态挂载进 #grid；
+           布局（谁在哪、多大）存在 localStorage pd.layout，编辑模式可拖拽/缩放/增删。 -->
+      <main id="view-monitor" class="monitor-view">
+        <!-- 编辑布局工具条：只在编辑模式显示（进出由顶栏「编辑布局」按钮切换） -->
+        <div class="editbar hidden" id="editbar">
+          <span class="editbar-label">添加组件</span>
+          <div class="editbar-chips" id="editbar-chips"></div>
+          <button class="btn" id="edit-reset" type="button">重置布局</button>
+        </div>
+        <div class="grid" id="grid">
+          <div class="grid-empty hidden">面板是空的——点上方「＋」把组件加回来</div>
+        </div>
       </main>
 
       <!-- ================= 设置页 ================= -->

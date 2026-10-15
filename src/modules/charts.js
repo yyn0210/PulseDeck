@@ -41,6 +41,15 @@ export class LineChart {
     if (this.data.length > this.max) this.data.shift();
   }
 
+  /** 卸载：解掉全局监听与尺寸观察。组件被移除时必须调用，否则 observer 一直持有 canvas。 */
+  destroy() {
+    window.removeEventListener("resize", this._resize);
+    if (this.observer) {
+      this.observer.disconnect();
+      this.observer = null;
+    }
+  }
+
   /**
    * 自适应量程：取当前窗口内的最大值留 25% 余量，并做阻尼平滑，
    * 避免纵轴在流量抖动时反复跳动。

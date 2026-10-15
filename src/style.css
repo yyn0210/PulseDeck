@@ -19,6 +19,9 @@
   --danger: #ff5f6d;
   --radius: 16px;
   --gap: 14px;
+  /* 监控页网格的行高单元（px）：小组件的高度按它的整数倍伸缩。
+   * 与 src/modules/layout.js 的 ROW_UNIT 是同一个值，改要两处一起改。 */
+  --row-unit: 44px;
   /* #app 的左右内边距：自绘标题栏要靠它算负外边距，横跨整个窗口顶边 */
   --pad-x: 16px;
   color-scheme: dark;
@@ -617,7 +620,15 @@ select option:hover {
 }
 
 
-/* ---------------- grid ---------------- */
+/* ---------------- 监控页：组件面板与网格 ---------------- */
+
+/* 监控页外壳：编辑工具条 + 组件网格的弹性容器（滚动仍只发生在 .grid 内部） */
+.monitor-view {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
 
 .grid {
   flex: 1 1 auto;
@@ -625,9 +636,10 @@ select option:hover {
   min-height: 0;
   display: grid;
   grid-template-columns: repeat(12, minmax(0, 1fr));
-  /* 关键 2：行按内容真实高度计算。否则 .card{min-height:0} 让行的 min-content 贡献为 0，
-     配合默认 align-content:stretch，隐式行会被均摊拉伸到容器高度，把卡片压扁、内容溢出叠层 */
-  grid-auto-rows: max-content;
+  /* 关键 2：行高是固定单元。小组件的位置 / 大小都按「列×行」网格坐标由 JS 显式放置
+     （modules/dashboard.js 写 grid-column / grid-row），行不随内容伸缩——
+     卡片内容自己负责在小尺寸下滚动（列表 overflow / 图表弹性高度） */
+  grid-auto-rows: var(--row-unit);
   align-content: start;
   gap: var(--gap);
   overflow-y: auto;
@@ -645,24 +657,9 @@ select option:hover {
   min-height: 0;
 }
 
-.span-7 {
-  grid-column: span 7;
-}
-.span-5 {
-  grid-column: span 5;
-}
-.span-9 {
-  grid-column: span 9;
-}
-.span-12 {
-  grid-column: span 12;
-}
-.card-ring,
-.card-power {
-  grid-column: span 3;
-}
-.card-net {
-  grid-column: span 9;
+/* 监控小组件（设置页的 .card 不带这类）：显式网格放置 + 编辑模式手柄的定位锚 */
+.widget {
+  position: relative;
 }
 
 .card-head {
@@ -908,20 +905,22 @@ select option:hover {
 
 .chart {
   width: 100%;
-  height: 132px;
+  /* 高度随卡片伸缩（卡片尺寸由网格坐标决定）；LineChart 的 ResizeObserver 会跟着重绘 */
+  flex: 1 1 auto;
+  min-height: 72px;
   display: block;
-  flex: 0 0 auto;
 }
 
 /* ---------------- cores ---------------- */
 
 .core-grid {
-  margin-top: 12px;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(58px, 1fr));
   gap: 8px;
+  align-content: start;
   overflow-y: auto;
-  max-height: 190px;
+  flex: 1 1 auto;
+  min-height: 0;
   padding-right: 2px;
 }
 
@@ -1051,12 +1050,12 @@ select option:hover {
 
 /* ---------------- processes ---------------- */
 
-.proc-tables {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 16px;
+/* 单个进程榜组件的滚动容器（榜与榜已拆成独立组件，卡片小了表格自己滚） */
+.proc-scroll {
   flex: 1 1 auto;
   min-height: 0;
+  overflow-y: auto;
+  padding-right: 2px;
 }
 
 .proc-table {
@@ -1106,6 +1105,163 @@ select option:hover {
 
 .proc-table .lead {
   color: var(--text);
+}
+
+/* ---------------- 编辑布局模式 ----------------
+ * 全部视觉开关挂在 body.editing 上：工具条显隐、卡片虚线框、手柄出现。
+ * 拖拽跟手用 transform（不触发重排），落点占位框 .grid-ph 是一个真正的网格项。 */
+
+.editbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  margin-bottom: 10px;
+  background: var(--panel-strong);
+  border: 1px dashed rgba(127, 160, 255, 0.4);
+  border-radius: 12px;
+}
+
+.editbar-label {
+  font-size: 11.5px;
+  color: var(--text-dim);
+  flex: 0 0 auto;
+}
+
+.editbar-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* chips 为空（全部组件都在面板上）时给一句占位，免得工具条看起来坏掉 */
+.editbar-chips:empty::after {
+  content: "全部组件都在面板上了（移除组件后会出现在这里）";
+  font-size: 11px;
+  color: var(--text-faint);
+  align-self: center;
+}
+
+.editbar-chip {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 11.5px;
+  font-family: inherit;
+  border-radius: 999px;
+  padding: 4px 11px;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.editbar-chip:hover {
+  background: rgba(111, 168, 255, 0.16);
+  border-color: rgba(127, 160, 255, 0.55);
+}
+
+.editing .widget {
+  cursor: grab;
+  outline: 1px dashed rgba(127, 160, 255, 0.35);
+  outline-offset: -1px;
+  touch-action: none;
+}
+
+/* 编辑态给卡片头右侧留出 × 的位置（否则会压到 tag 胶囊上） */
+.editing .widget > .card-head {
+  padding-right: 26px;
+}
+
+.editing .widget:active {
+  cursor: grabbing;
+}
+
+.editing .widget.dragging,
+.editing .widget.resizing {
+  z-index: 30;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.55);
+  opacity: 0.92;
+}
+
+.widget.dragging {
+  will-change: transform;
+}
+
+/* 移除按钮：卡片头右上角的小圆钮（只在编辑模式出现）。
+ * 必须完整落在卡片内——悬挂在卡片外会让最右列把网格撑出横向滚动条。 */
+.w-remove {
+  display: none;
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 21px;
+  height: 21px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 95, 109, 0.55);
+  background: #2a1420;
+  color: #ff8d97;
+  font-size: 13px;
+  line-height: 1;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 4;
+  padding: 0;
+}
+
+.editing .w-remove {
+  display: flex;
+}
+
+.w-remove:hover {
+  background: rgba(255, 95, 109, 0.9);
+  color: #fff;
+}
+
+/* 缩放手柄：右下角的两道斜纹 */
+.w-resize {
+  display: none;
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  width: 15px;
+  height: 15px;
+  cursor: nwse-resize;
+  z-index: 4;
+  border-radius: 2px;
+  touch-action: none;
+  background: linear-gradient(
+    135deg,
+    transparent 0 52%,
+    rgba(148, 170, 220, 0.6) 52% 62%,
+    transparent 62% 70%,
+    rgba(148, 170, 220, 0.6) 70% 80%,
+    transparent 80%
+  );
+}
+
+.editing .w-resize {
+  display: block;
+}
+
+/* 拖动时的落点占位框（真正的网格项，跟着目标格走） */
+.grid-ph {
+  border: 1px dashed rgba(127, 160, 255, 0.6);
+  background: rgba(111, 168, 255, 0.08);
+  border-radius: var(--radius);
+  pointer-events: none;
+}
+
+/* 组件被全部移除时的空状态提示 */
+.grid-empty {
+  grid-column: 1 / -1;
+  padding: 48px 0;
+  text-align: center;
+  color: var(--text-faint);
+  font-size: 12px;
 }
 
 /* ---------------- statusbar ---------------- */
@@ -1179,8 +1335,8 @@ select option:hover {
 }
 
 .net-chart {
-  height: 96px;
-  flex: 0 0 auto;
+  min-height: 64px;
+  flex: 1 1 auto;
 }
 
 .iface-list {
