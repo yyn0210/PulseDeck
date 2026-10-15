@@ -75,30 +75,33 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: '脉盘 PulseDeck ${{ github.ref_name }}'
           releaseBody: |
-            Windows x64 安装包（NSIS）：下载 `PulseDeck_0.5.0_x64-setup.exe` 双击安装即可，
+            Windows x64 安装包（NSIS）：下载 `PulseDeck_0.6.0_x64-setup.exe` 双击安装即可，
             无需联网、无需管理员权限。
 
-            Linux x64：deb 系发行版（Debian / Ubuntu / Deepin / UOS）下载 `PulseDeck_0.5.0_amd64.deb`，
-            执行 `sudo apt install ./PulseDeck_0.5.0_amd64.deb`；其他发行版下载
-            `PulseDeck_0.5.0_amd64.AppImage`，`chmod +x` 后直接运行。
+            Linux x64：deb 系发行版（Debian / Ubuntu / Deepin / UOS）下载 `PulseDeck_0.6.0_amd64.deb`，
+            执行 `sudo apt install ./PulseDeck_0.6.0_amd64.deb`；其他发行版下载
+            `PulseDeck_0.6.0_amd64.AppImage`，`chmod +x` 后直接运行。
             Linux 上无需提权（温度 / 风扇走 hwmon）。
 
             ## 本版更新（${{ github.ref_name }}）
 
-            - **大幅降低采样开销**：进程榜只刷新界面真正用到的「占用率 + 内存」——不再把每个线程
-              当成独立进程逐个读取（Linux 上 425 个进程曾被展开成 3177 条逐条读 stat / statm），
-              也不再读每个进程的磁盘 IO 与可执行路径。实测单拍采样耗时：本机 Windows 从 76 ms
-              降到 39 ms（其中进程刷新 52 ms → 21 ms）；Linux 桌面机从 70 ms 降到 10 ms 量级，
-              常驻的进程条目与打开的系统文件数降到约 1/7。
-            - **Linux 温度采集只读用得上的芯片**：CPU / 显卡之外的 hwmon（NVMe、无线网卡、电池…）
-              不再逐个读温度——NVMe 一次读要往设备发一条 admin 命令、光它一个芯片就 9 ms，
-              比其余芯片加起来还贵；整次 hwmon 扫描从 10 ms 降到 1 ms。
-            - **主面板重绘开销压到接近零**：核心条形图的长度改用不触发页面重排的合成变换绘制
-              （顺带去掉它的补间），环形进度只在读数明显跳变（≥ 8 个百分点）时才补间——实测把
-              「每秒一拍」的界面重绘开销从约一个 CPU 核的 15%（环形补间 11% + 核心条 4%，
-              另有同量级的主进程合成开销）收掉，长时间开着更省电。
+            - **AMD 平台也能直读 CPU 温度了**：AMD Zen 架构（family 17h~1Ah，Ryzen 1000 系以来
+              的桌面 / 移动 CPU）现在与 Intel 走同一条最准路径——由提权桥接直读片内传感器：
+              Intel 读 MSR 的 DTS 寄存器，AMD 读 SMN 的 `THM_TCON_CUR_TMP`（即 Linux `k10temp`
+              读的同一个寄存器）。更早的 AMD 平台（FX / Phenom 等）仍回退 ACPI 热区 / PDH，
+              读不到时会写明具体原因。
+            - **AMD 平台的 CPU 封装功耗**：Windows 没有 AMD 的 RAPL 性能计数器，改由同一提权
+              桥接读 MSR 能量计数器（`PWR_UNIT` / `PKG_ENERGY_STAT` 两拍求差）——「电源功率」
+              卡片在 AMD 上同样给出 CPU 封装功耗。
+            - **桥接进程按 CPU 厂商自动选模块**：Intel → `IntelMSR.bin`、AMD → `AMDFamily17.bin`，
+              两个模块同出自 PawnIO.Modules v0.2.3、官方签名、随安装包原样分发；没有直读通道的
+              厂商桥接进程照常运行，联想机型的风扇转速不受影响。
 
-            读取 CPU 温度最准的 MSR 通道与联想风扇转速（仅 Windows）需要管理员桥接（PawnIO 驱动，随包分发、绝不静默安装），
+            > 说明：开发机没有 AMD 平台，AMD 侧的解码按公开实现（Linux `k10temp`、
+            > LibreHardwareMonitor）编写并有单测覆盖，真机读数尚待验证——如在你的 AMD 机器上
+            > 读数异常，欢迎提 Issue 并附上 `%LOCALAPPDATA%\PulseDeck\pawnio.log`。
+
+            读取 CPU 温度最准的 MSR（Intel）/ SMN（AMD）通道与联想风扇转速（仅 Windows）需要管理员桥接（PawnIO 驱动，随包分发、绝不静默安装），
             入口在设置页「高级采集」；不启用也能正常使用，温度会回退到 ACPI / PDH 通道。
           releaseDraft: false
           prerelease: false
