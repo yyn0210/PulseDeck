@@ -9,7 +9,7 @@
 //!
 //! | trait | Windows 实现（`windows.rs`） | Linux 实现（`linux.rs`） | 其他平台（`unsupported.rs`） |
 //! | --- | --- | --- | --- |
-//! | [`GpuSource`] | NVML 优先 / PDH 兜底（`gpu.rs`） | NVML 优先 / amdgpu sysfs 兜底 | 诚实报「暂不支持」 |
+//! | [`GpuSource`] | NVML + PDH 计数器合并（`gpu.rs`，身份取自 DXGI） | NVML + 驱动 sysfs（amdgpu / i915 / xe） | 诚实报「暂不支持」 |
 //! | [`ThermalSource`] | MSR 桥接 / LHM / ACPI / PDH 四级降级（`thermal.rs`） | hwmon + RAPL 功耗 | 同上 |
 //! | [`FanSource`] | 厂商私有 / LHM / ACPI 三级降级（`fan.rs`） | hwmon fan/pwm | 同上 |
 //! | [`BatterySource`] | CallNtPowerInformation / GetSystemPowerStatus（`win32.rs`） | `/sys/class/power_supply` | 同上 |

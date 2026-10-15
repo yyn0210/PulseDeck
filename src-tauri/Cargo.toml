@@ -36,6 +36,8 @@ windows-sys = { version = "0.59", features = [
 windows = { version = "0.62", features = [
   "Win32_Foundation",
   "Win32_System_Performance",
+  # GPU 兜底通道（gpu.rs）的适配器身份：PDH 只给 LUID，名字与显存总量要向 DXGI 要
+  "Win32_Graphics_Dxgi",
   "Win32_System_Wmi",
   "Win32_System_Com",
   "Win32_System_Ole",

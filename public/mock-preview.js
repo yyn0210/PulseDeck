@@ -143,7 +143,8 @@
       },
       gpu: {
         available: true,
-        source: "nvml",
+        source: "nvml+pdh",
+        mainIndex: 0,
         usagePct: gpuUsage,
         memUsedBytes: (1.8 + tick * 0.01) * 1024 * 1024 * 1024,
         memTotalBytes: 6 * 1024 * 1024 * 1024,
@@ -153,6 +154,8 @@
         fanPct: fanOn ? rnd(38, 12) : null,
         fanRpm: null,
         fanSource: fanOn ? "NVIDIA 驱动" : "",
+        // 双显卡：独显（NVML，主卡）+ 核显（Windows 计数器），
+        // 核显只出现在「其它显卡」那一行（temp/power 在 Windows 上读不到，如实为 null）
         devices: [
           {
             index: 0,
@@ -166,6 +169,19 @@
             fanPct: fanOn ? rnd(38, 12) : null,
             fanRpm: null,
             source: "nvml",
+          },
+          {
+            index: 1,
+            name: "Intel(R) Iris(R) Xe Graphics",
+            usagePct: jitter(4, 6),
+            memUsedBytes: 0.6 * 1024 * 1024 * 1024,
+            memTotalBytes: 24 * 1024 * 1024 * 1024,
+            memPct: 2.5,
+            tempC: null,
+            powerW: null,
+            fanPct: null,
+            fanRpm: null,
+            source: "pdh",
           },
         ],
       },

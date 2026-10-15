@@ -1,8 +1,10 @@
 //! WMI（COM）查询封装
 //!
-//! 只有两处会用到，都是 sysinfo / Win32 拿不到、但又希望尽量取到的信息：
-//! 1. 硬件温度传感器 —— LibreHardwareMonitor / OpenHardwareMonitor 的 `Sensor` 表；
-//! 2. 显卡名称 —— `Win32_VideoController`（PDH 只给 luid，不给可读名称）。
+//! 用到的地方都是 sysinfo / Win32 / PDH 拿不到、但又希望尽量取到的信息：
+//! 1. 硬件温度与风扇传感器 —— LibreHardwareMonitor / OpenHardwareMonitor 的 `Sensor` 表；
+//! 2. 风扇 —— `Win32_Fan`（ACPI）与联想的私有 ACPI-WMI 方法。
+//!
+//! （显卡名称曾走 `Win32_VideoController`，现改由 DXGI 提供：见 `gpu_dxgi.rs`。）
 //!
 //! COM 初始化的作用域必须包住整个查询过程：一旦提前 CoUninitialize，
 //! 拿到的 IWbemServices 指针就失效了，所以这里刻意用「一次性查询」而不是返回句柄。
@@ -779,21 +781,6 @@ fn identifier_kind(identifier: &str) -> String {
     } else {
         "other".to_string()
     }
-}
-
-/// 显卡名称列表（Win32_VideoController 的 Name 字段）
-pub fn video_controller_names() -> Vec<String> {
-    let Some(rows) = query(
-        "root\\cimv2",
-        "SELECT Name FROM Win32_VideoController",
-        &["Name"],
-    ) else {
-        return Vec::new();
-    };
-    rows.iter()
-        .filter_map(|r| r.get("Name").and_then(|p| p.as_string()))
-        .filter(|s| !s.trim().is_empty())
-        .collect()
 }
 
 /// 一条风扇读数（来源自硬件监控软件或 ACPI）

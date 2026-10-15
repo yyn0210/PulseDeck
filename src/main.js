@@ -188,7 +188,18 @@ function setFanSource(id, source) {
   }
 }
 
-function renderCpu(cpu) {  setRing("cpu-ring", cpu.usageTotal);
+/** 切换一行「附加信息」：items 为空就把整行藏起来。
+ * 值里的每段用 ` · ` 连接（`.kv li b` 是单行 + 省略号，不会撑破卡片）。 */
+function toggleRow(rowId, items) {
+  const row = document.getElementById(rowId);
+  if (!row) return;
+  const value = row.querySelector("b");
+  if (value) value.textContent = items.join(" · ");
+  row.classList.toggle("hidden", items.length === 0);
+}
+
+function renderCpu(cpu) {
+  setRing("cpu-ring", cpu.usageTotal);
   setText("cpu-value", cpu.usageTotal.toFixed(1));
   setText("cpu-brand", cpu.brand);
   setText(
@@ -250,6 +261,32 @@ function renderMemory(mem) {
 
 /* ---------------- GPU ---------------- */
 
+// 各数据源在界面上的名字。Windows：NVML（N 卡）/ 性能计数器（核显、A 卡）；
+// Linux：NVML（N 卡）/ 显卡驱动 sysfs（amdgpu、i915、xe）
+const GPU_SOURCE_LABEL = {
+  nvml: "NVIDIA 驱动",
+  pdh: "Windows 计数器",
+  "pdh-warming": "正在初始化",
+  amdgpu: "AMD 驱动",
+  amd: "AMD 驱动",
+  i915: "Intel 驱动",
+  xe: "Intel 驱动",
+  intel: "Intel 驱动",
+};
+
+function gpuSourceText(gpu) {
+  if (!gpu.available) return GPU_SOURCE_LABEL[gpu.source] || "无可用数据源";
+  const labels = [...new Set(gpu.devices.map((d) => GPU_SOURCE_LABEL[d.source] || d.source))];
+  const multi = gpu.devices.length > 1 ? ` · ${gpu.devices.length} 块显卡` : "";
+  return `${labels.join(" + ")}${multi}`;
+}
+
+/** 一块卡在「其它显卡」行里的短描述：名字 + 占用（读不到就 --） */
+function gpuBrief(d) {
+  const usage = d.usagePct != null ? `${d.usagePct.toFixed(0)}%` : "--";
+  return `${d.name} ${usage}`;
+}
+
 function renderGpu(gpu, thermal) {
   const usage = gpu.usagePct;
   if (!gpu.available) {
@@ -261,6 +298,7 @@ function renderGpu(gpu, thermal) {
     setText("gpu-temp", "--");
     setText("gpu-power", "--");
     setText("gpu-fan", "--");
+    toggleRow("gpu-others-row", []);
     setText("gpu-tag", "无可用数据源");
     return;
   }
@@ -269,7 +307,9 @@ function renderGpu(gpu, thermal) {
   setText("gpu-value", usage != null ? usage.toFixed(0) : "--");
   setText("gpu-label", usage != null ? "显卡占用" : "占用未知");
 
-  const main = gpu.devices.find((d) => d.name) || gpu.devices[0];
+  // 型号显示**主卡**（后端按 mainIndex 指明）—— 上面的数字就是这块卡的，
+  // 别拿列表第一块充数：多显卡时两者常常不是同一块（详见 model.rs 的挑卡规则）
+  const main = gpu.devices.find((d) => d.index === gpu.mainIndex) || gpu.devices[0];
   setText("gpu-name", main ? main.name : "--");
   setText(
     "gpu-mem",
@@ -285,9 +325,12 @@ function renderGpu(gpu, thermal) {
   setText("gpu-fan", fmtFan(gpu.fanRpm, gpu.fanPct));
   setFanSource("gpu-fan", gpu.fanSource);
 
-  const sourceLabel = { nvml: "NVIDIA 驱动", pdh: "Windows 计数器", "pdh-warming": "正在初始化" };
-  const multi = gpu.devices.length > 1 ? ` · ${gpu.devices.length} 块显卡` : "";
-  setText("gpu-tag", `${sourceLabel[gpu.source] || gpu.source}${multi}`);
+  // 主卡之外的卡单列一行（笔记本的核显、多卡机器的第二块），不然它们只体现在
+  // 「N 块显卡」这几个字里，等于没展示
+  const others = gpu.devices.filter((d) => main && d.index !== main.index);
+  toggleRow("gpu-others-row", others.map(gpuBrief));
+
+  setText("gpu-tag", gpuSourceText(gpu));
 }
 
 /* ---------------- 网络 ---------------- */
@@ -551,7 +594,8 @@ const FAN_HINT_CPU =
   "CPU 风扇转速读不到：转速由主板 EC / Super I/O 控制，Windows 未向用户态程序公开；" +
   "装 OpenHardwareMonitor（或旧版 LibreHardwareMonitor ≤ 0.9.4）后本工具会自动读到。";
 const FAN_HINT_GPU =
-  "GPU 风扇转速读不到：显卡驱动未上报（笔记本独显的风扇通常由 EC 控制，NVIDIA 驱动读数为 N/A）。";
+  "GPU 风扇转速读不到：显卡驱动未上报（笔记本独显的风扇通常由 EC 控制，NVIDIA 驱动读数为 N/A）；" +
+  "Windows 没有面向 AMD / Intel 显卡的公开风扇接口，核显本身也不带风扇。";
 const FAN_HINT_BOTH = `${FAN_HINT_CPU} ${FAN_HINT_GPU}`;
 const FAN_HINT_LENOVO =
   "本机是联想设备，风扇转速可通过厂商 ACPI 通道读取，但需要管理员权限。点击「启用」并按提示确认一次即可。";

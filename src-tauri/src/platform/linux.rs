@@ -6,20 +6,21 @@
 //!
 //! | trait | 通道 |
 //! | --- | --- |
-//! | [`GpuSource`] | NVML（NVIDIA）→ amdgpu sysfs（busy% / VRAM / 温度 / 功耗 / 风扇）|
+//! | [`GpuSource`] | NVML（NVIDIA）+ 驱动 sysfs：amdgpu（占用 / VRAM / 温度 / 功耗 / 风扇）、i915 / xe（温度 / 功耗 / 风扇）|
 //! | [`ThermalSource`] | hwmon（coretemp / k10temp / zenpower / 显卡 hwmon）+ RAPL 功耗 |
 //! | [`FanSource`] | hwmon `fanN_input`（RPM）/ `pwmN`（占空比）|
 //! | [`BatterySource`] | `/sys/class/power_supply/`（charge / energy 两种量纲）|
 //! | [`MemoryExtras`] | `/proc/meminfo`（MemAvailable + Committed_AS / CommitLimit）|
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use super::gpu_nvml::NvmlSource;
 use super::linux_parse::{
-    amd_device, battery_convert, chip_reading, energy_delta_w, gpu_fan_readings, parse_meminfo,
-    pick_cpu_fan_chip, pick_cpu_temp, pick_gpu_temp, plausible_temp, temp_relevant_chip, AmdCardRaw,
-    BatteryRaw, FanPick, HwmonChip,
+    battery_convert, chip_reading, drm_device, energy_delta_w, gpu_fan_readings, parse_meminfo,
+    pick_cpu_fan_chip, pick_cpu_temp, pick_gpu_temp, plausible_temp, temp_relevant_chip,
+    BatteryRaw, DrmCardRaw, EnergyCounter, FanPick, HwmonChip,
 };
 use super::{
     BatterySource, FanReading, FanReport, FanSource, GpuSource, MemoryExtras, MemoryStatus,
@@ -27,7 +28,7 @@ use super::{
 };
 use crate::battery;
 use crate::fan_pref::FanPrefStore;
-use crate::model::{BatteryInfo, GpuDevice, ThermalInfo};
+use crate::model::{device_sources, BatteryInfo, GpuDevice, ThermalInfo};
 
 /* ------------------------------ 通用小工具 ------------------------------ */
 
@@ -162,9 +163,19 @@ fn find_rapl_energy() -> Option<PathBuf> {
 
 /* ------------------------------ GPU ------------------------------ */
 
-/// 扫 amdgpu 的 cardN（只认 vendor 0x1002 的），返回按卡号排序的原始读数
-fn scan_amd_cards() -> Vec<AmdCardRaw> {
-    let mut cards: Vec<(u32, AmdCardRaw)> = Vec::new();
+/// 扫 `/sys/class/drm` 下的整卡，返回（驱动名, 原始读数）。
+///
+/// 认两家：
+/// * **AMD**（`vendor` = 0x1002）：`gpu_busy_percent` + `mem_info_vram_*` 全都有；
+/// * **Intel**（0x8086）：**没有**占用与显存的 sysfs 接口（内核只暴露频率，
+///   拿频率冒充占用就是编数据），只报 hwmon 给得出的温度 / 功耗 / 风扇。
+///
+/// 其余厂商跳过：NVIDIA 走 NVML（占用 / 显存 / 温度 / 功耗比 sysfs 全），
+/// 虚拟显卡之类则根本没有可用读数。
+///
+/// `energy` 是按卡号保存的能量计数器基线（Intel 的功耗只能差分求，见 [`card_hwmon`]）。
+fn scan_drm_cards(energy: &mut HashMap<u32, EnergyCounter>) -> Vec<(String, DrmCardRaw)> {
+    let mut cards: Vec<(u32, String, DrmCardRaw)> = Vec::new();
     let Ok(rd) = std::fs::read_dir("/sys/class/drm") else {
         return Vec::new();
     };
@@ -175,20 +186,36 @@ fn scan_amd_cards() -> Vec<AmdCardRaw> {
             continue;
         };
         let dev = entry.path().join("device");
-        // 只处理 AMD（0x1002）；Intel 核显的 hwmon 只有温度、没有 busy% / VRAM sysfs，诚实跳过
-        if read_str(&dev.join("vendor")).as_deref() != Some("0x1002") {
-            continue;
-        }
-        let label =
-            read_str(&dev.join("product_name")).unwrap_or_else(|| format!("AMD GPU card{idx}"));
-        let (temp_c, power_uw, fan_rpm, fan_pwm) = amd_hwmon(&entry.path());
+        // 驱动名（amdgpu / i915 / xe）读不到时退回厂商名，界面文案跟着退化
+        let (vendor_label, vendor_name) = match read_str(&dev.join("vendor")).as_deref() {
+            Some("0x1002") => ("amd", "AMD"),
+            Some("0x8086") => ("intel", "Intel"),
+            _ => continue,
+        };
+        let source = driver_name(&dev).unwrap_or_else(|| vendor_label.to_string());
+        let label = read_str(&dev.join("product_name"))
+            .unwrap_or_else(|| format!("{vendor_name} 显卡 ({source})"));
+
+        let (temp_c, power_uw, fan_rpm, fan_pwm) = card_hwmon(&entry.path(), idx, energy);
+        let (busy_pct, vram_used, vram_total) = if vendor_label == "amd" {
+            (
+                read_num::<f32>(&dev.join("gpu_busy_percent")),
+                read_num::<u64>(&dev.join("mem_info_vram_used")),
+                read_num::<u64>(&dev.join("mem_info_vram_total")),
+            )
+        } else {
+            // Intel：CPU 与核显共享内存，内核没有 VRAM 与占用接口 —— 如实留空
+            (None, None, None)
+        };
+
         cards.push((
             idx,
-            AmdCardRaw {
+            source,
+            DrmCardRaw {
                 name: label,
-                busy_pct: read_num::<f32>(&dev.join("gpu_busy_percent")),
-                vram_used: read_num::<u64>(&dev.join("mem_info_vram_used")),
-                vram_total: read_num::<u64>(&dev.join("mem_info_vram_total")),
+                busy_pct,
+                vram_used,
+                vram_total,
                 temp_c: temp_c.and_then(plausible_temp),
                 power_uw,
                 fan_rpm,
@@ -196,49 +223,88 @@ fn scan_amd_cards() -> Vec<AmdCardRaw> {
             },
         ));
     }
-    cards.sort_by_key(|(idx, _)| *idx);
-    cards.into_iter().map(|(_, c)| c).collect()
+    cards.sort_by_key(|(idx, _, _)| *idx);
+    cards.into_iter().map(|(_, src, c)| (src, c)).collect()
+}
+
+/// 显卡的 PCI 驱动名：`…/device/driver` 是指向 `/sys/bus/pci/drivers/<名字>` 的符号链接
+fn driver_name(dev: &Path) -> Option<String> {
+    let target = std::fs::read_link(dev.join("driver")).ok()?;
+    target
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .filter(|n| !n.is_empty())
 }
 
 /// 一张显卡自己的 hwmon（`/sys/class/drm/cardN/device/hwmon/hwmonM`）里的
 /// 温度 / 功耗 / 风扇。显卡总有且只有一个 hwmon，取第一个。
-fn amd_hwmon(card_dir: &Path) -> (Option<f32>, Option<f64>, Option<f32>, Option<f32>) {
+///
+/// 功耗两套接口（内核文档 `sysfs-driver-intel-i915-hwmon` / `…-xe-hwmon`）：
+/// * `power1_average`（µW）—— amdgpu 直接给功率，最省事；
+/// * `energy1_input`（µJ）—— Intel 的 hwmon 只给能量计数器（6.2+），
+///   只能按 [`EnergyCounter`] 差分求功率：首拍没有基线，故那次返回 None。
+fn card_hwmon(
+    card_dir: &Path,
+    card_idx: u32,
+    energy: &mut HashMap<u32, EnergyCounter>,
+) -> (Option<f32>, Option<f64>, Option<f32>, Option<f32>) {
     let Ok(rd) = std::fs::read_dir(card_dir.join("device/hwmon")) else {
         return (None, None, None, None);
     };
     let Some(hwmon) = rd.flatten().map(|e| e.path()).find(|p| p.is_dir()) else {
         return (None, None, None, None);
     };
+
+    let power_uw = if let Some(uw) = read_num::<f64>(&hwmon.join("power1_average")) {
+        // 有直接功率就不需要差分基线了（换了 hwmon 也不会留着旧基线）
+        energy.remove(&card_idx);
+        Some(uw)
+    } else if let Some(uj) = read_num::<u64>(&hwmon.join("energy1_input")) {
+        let now = Instant::now();
+        let counter = energy
+            .entry(card_idx)
+            .or_insert_with(|| EnergyCounter::new(uj, now));
+        counter.watts(uj, now).map(|w| w * 1_000_000.0)
+    } else {
+        energy.remove(&card_idx);
+        None
+    };
+
     (
         read_num::<i64>(&hwmon.join("temp1_input")).map(|m| m as f32 / 1000.0),
-        read_num::<f64>(&hwmon.join("power1_average")),
+        power_uw,
         read_num::<f32>(&hwmon.join("fan1_input")),
         read_num::<f32>(&hwmon.join("pwm1")),
     )
 }
 
-/// GPU：NVML 优先（N 卡），其次 amdgpu sysfs（A 卡）
+/// GPU：NVML（N 卡）+ 驱动 sysfs（AMD / Intel）**同时采样、合并展示**
+///
+/// 早先的版本在 NVML 可用时直接返回，于是「N 卡 + 核显」的机器上核显永远不出现；
+/// 现在两条都跑，NVIDIA 由 NVML 报（sysfs 上没有它的占用与显存，不会重复）。
 struct LinuxGpu {
     nvml: NvmlSource,
+    /// Intel 显卡的功耗靠能量计数器差分，按卡号保存上次读数
+    energy: HashMap<u32, EnergyCounter>,
 }
 
 impl GpuSource for LinuxGpu {
     fn sample(&mut self) -> (Vec<GpuDevice>, String) {
-        if let Some(devices) = self.nvml.sample() {
-            if !devices.is_empty() {
-                return (devices, "nvml".to_string());
-            }
+        let mut devices = self.nvml.sample().unwrap_or_default();
+        devices.extend(
+            scan_drm_cards(&mut self.energy)
+                .iter()
+                .filter_map(|(source, raw)| drm_device(0, raw, source)),
+        );
+        // 序号按最终列表顺序重排（NVML 在前、sysfs 在后），界面按序号索引时不会错位
+        for (i, dev) in devices.iter_mut().enumerate() {
+            dev.index = i as u32;
         }
-        let devices: Vec<GpuDevice> = scan_amd_cards()
-            .iter()
-            .enumerate()
-            .filter_map(|(i, raw)| amd_device(i as u32, raw))
-            .collect();
         if devices.is_empty() {
-            (devices, "unavailable".to_string())
-        } else {
-            (devices, "amdgpu".to_string())
+            return (devices, "unavailable".to_string());
         }
+        let source = device_sources(&devices);
+        (devices, source)
     }
 }
 
@@ -471,6 +537,7 @@ pub(super) fn sources() -> PlatformSources {
     PlatformSources {
         gpu: Box::new(LinuxGpu {
             nvml: NvmlSource::new(),
+            energy: HashMap::new(),
         }),
         thermal: Box::new(LinuxThermal::new()),
         fan: Box::new(LinuxFan { pref: None }),

@@ -7,6 +7,8 @@
 //! 数据流：`linux.rs` 把 sysfs / procfs 的原始字符串装进这里的 `*Raw` / `HwmonChip`
 //! 结构，本模块负责一切换算与选择。
 
+use std::time::Instant;
+
 use crate::model::GpuDevice;
 
 /* ------------------------------ 数值区间 ------------------------------ */
@@ -204,12 +206,14 @@ pub fn energy_delta_w(
     Some(delta as f64 / 1_000_000.0 / elapsed_s)
 }
 
-/* ------------------------------ amdgpu ------------------------------ */
+/* ------------------------------ 显卡 sysfs ------------------------------ */
 
-/// amdgpu sysfs 的一张卡的原始读数
+/// 一张显卡（AMD amdgpu / Intel i915、xe）sysfs 的原始读数
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct AmdCardRaw {
+pub struct DrmCardRaw {
     pub name: String,
+    /// 占用百分比。**只有 amdgpu 有**（`gpu_busy_percent`）；
+    /// Intel 没有任何 sysfs 占用接口（内核只暴露频率与 hwmon 的温度功耗），如实为 None。
     pub busy_pct: Option<f32>,
     pub vram_used: Option<u64>,
     pub vram_total: Option<u64>,
@@ -219,9 +223,12 @@ pub struct AmdCardRaw {
     pub fan_pwm: Option<f32>,
 }
 
-/// 由原始读数组装 GpuDevice；什么都没读到（无 busy%/VRAM/温度）时返回 None
-pub fn amd_device(index: u32, card: &AmdCardRaw) -> Option<GpuDevice> {
-    let has_any = card.busy_pct.is_some() || card.vram_total.is_some() || card.temp_c.is_some();
+/// 由原始读数组装 GpuDevice；什么都没读到（占用 / 显存 / 温度 / 功耗全空）时返回 None
+pub fn drm_device(index: u32, card: &DrmCardRaw, source: &str) -> Option<GpuDevice> {
+    let has_any = card.busy_pct.is_some()
+        || card.vram_total.is_some()
+        || card.temp_c.is_some()
+        || card.power_uw.is_some();
     if !has_any {
         return None;
     }
@@ -244,8 +251,38 @@ pub fn amd_device(index: u32, card: &AmdCardRaw) -> Option<GpuDevice> {
         power_w: card.power_uw.map(|uw| (uw / 1_000_000.0) as f32),
         fan_pct: card.fan_pwm.map(|v| (v / 255.0 * 100.0).clamp(0.0, 100.0)),
         fan_rpm: card.fan_rpm.and_then(plausible_rpm),
-        source: "amdgpu".to_string(),
+        source: source.to_string(),
     })
+}
+
+/// 能量计数器差分（Intel 显卡的 hwmon 只有 `energy1_input`，没有 `power1_average`）
+///
+/// 用法：第一次读到计数时 `EnergyCounter::new(uj)`，之后每拍 `watts(uj)`。
+/// 计数器回绕（新值 < 旧值）或时间没有推进时本次放弃（返回 None），
+/// 基线照样更新到新值，下一拍就能继续 —— 与 RAPL 差分同一口径。
+#[derive(Clone, Copy, Debug)]
+pub struct EnergyCounter {
+    last_uj: u64,
+    last_at: Instant,
+}
+
+impl EnergyCounter {
+    pub fn new(uj: u64, at: Instant) -> Self {
+        Self {
+            last_uj: uj,
+            last_at: at,
+        }
+    }
+
+    /// 用本拍读数求功率（W）
+    pub fn watts(&mut self, uj: u64, now: Instant) -> Option<f64> {
+        let elapsed = now.saturating_duration_since(self.last_at).as_secs_f64();
+        let prev = self.last_uj;
+        self.last_uj = uj;
+        self.last_at = now;
+        // 显卡 hwmon 没有 max_energy_range 可查：回绕时本次放弃，下拍重新起算
+        energy_delta_w(prev, uj, None, elapsed)
+    }
 }
 
 /* ------------------------------ 电池 ------------------------------ */
@@ -374,6 +411,8 @@ pub fn parse_meminfo(text: &str) -> Option<MeminfoParsed> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     /* ---------- hwmon 选择 ---------- */
@@ -467,11 +506,11 @@ mod tests {
         assert_eq!(energy_delta_w(90, 15, None, 1.0), None);
     }
 
-    /* ---------- amdgpu ---------- */
+    /* ---------- 显卡 sysfs ---------- */
 
     #[test]
-    fn amd_device_maps_all_fields() {
-        let raw = AmdCardRaw {
+    fn drm_device_maps_all_fields() {
+        let raw = DrmCardRaw {
             name: "Radeon RX 6800".to_string(),
             busy_pct: Some(37.0),
             vram_used: Some(2_000_000_000),
@@ -481,7 +520,7 @@ mod tests {
             fan_rpm: Some(1500.0),
             fan_pwm: Some(128.0),
         };
-        let dev = amd_device(0, &raw).expect("有 busy% 就应产出设备");
+        let dev = drm_device(0, &raw, "amdgpu").expect("有 busy% 就应产出设备");
         assert_eq!(dev.usage_pct, Some(37.0));
         assert_eq!(dev.mem_pct, Some(12.5));
         assert_eq!(dev.power_w, Some(120.0));
@@ -490,12 +529,56 @@ mod tests {
     }
 
     #[test]
-    fn amd_device_absent_when_no_readings() {
-        let raw = AmdCardRaw {
+    fn drm_device_absent_when_no_readings() {
+        let raw = DrmCardRaw {
             name: "AMD GPU card0".to_string(),
-            ..AmdCardRaw::default()
+            ..DrmCardRaw::default()
         };
-        assert!(amd_device(0, &raw).is_none(), "什么都读不到就不该报设备");
+        assert!(drm_device(0, &raw, "amdgpu").is_none(), "什么都读不到就不该报设备");
+    }
+
+    /// Intel 核显：没有占用与显存（内核不提供），只有 hwmon 的温度 / 功耗；
+    /// 这种「部分指标可读」也要如实列出，读不到的字段留空
+    #[test]
+    fn intel_card_with_only_temp_and_power_is_reported() {
+        let raw = DrmCardRaw {
+            name: "Intel 显卡 (i915)".to_string(),
+            temp_c: Some(48.0),
+            power_uw: Some(3_500_000.0),
+            ..DrmCardRaw::default()
+        };
+        let dev = drm_device(1, &raw, "i915").expect("有温度就应产出设备");
+        assert_eq!(dev.usage_pct, None, "占用没有 sysfs 来源，留空而不是拿频率冒充");
+        assert_eq!(dev.mem_total_bytes, 0);
+        assert_eq!(dev.temp_c, Some(48.0));
+        assert_eq!(dev.power_w, Some(3.5));
+        assert_eq!(dev.source, "i915");
+    }
+
+    /// 只有能量计数器（还没有两拍基线）的 Intel 卡也能列出来：功耗留空，别的照报
+    #[test]
+    fn energy_counter_first_sample_has_no_power_yet() {
+        let raw = DrmCardRaw {
+            name: "Intel 显卡 (xe)".to_string(),
+            temp_c: Some(42.0),
+            ..DrmCardRaw::default()
+        };
+        let dev = drm_device(0, &raw, "xe").expect("有温度就应产出设备");
+        assert_eq!(dev.power_w, None);
+        assert_eq!(dev.temp_c, Some(42.0));
+    }
+
+    #[test]
+    fn energy_counter_differs_and_recovers_from_wrap() {
+        let t0 = Instant::now();
+        let mut c = EnergyCounter::new(1_000_000, t0);
+        // 1 秒涨 3 J = 3 W
+        assert_eq!(c.watts(4_000_000, t0 + Duration::from_secs(1)), Some(3.0));
+        // 回绕（新值 < 旧值）且不知道量程：本次放弃，但基线更新到新值
+        assert_eq!(c.watts(10, t0 + Duration::from_secs(2)), None);
+        assert_eq!(c.watts(2_000_010, t0 + Duration::from_secs(3)), Some(2.0));
+        // 时间没有推进（同一时刻取两次）：放弃，避免除零得到无穷大
+        assert_eq!(c.watts(3_000_010, t0 + Duration::from_secs(3)), None);
     }
 
     /* ---------- 电池 ---------- */

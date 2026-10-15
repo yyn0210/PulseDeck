@@ -20,6 +20,8 @@ use std::time::Duration;
 #[cfg(windows)]
 mod gpu;
 #[cfg(windows)]
+mod gpu_dxgi;
+#[cfg(windows)]
 mod thermal;
 #[cfg(windows)]
 mod fan;

@@ -126,16 +126,20 @@ pub struct GpuDevice {
     pub fan_pct: Option<f32>,
     /// 风扇真实转速（RPM）。仅当驱动/传感器给出可信 RPM 时才有值，否则为 None。
     pub fan_rpm: Option<f32>,
-    /// 数据来源：nvml = NVIDIA 驱动；pdh = Windows 性能计数器
+    /// 数据来源：nvml = NVIDIA 驱动；pdh = Windows 性能计数器；
+    /// amdgpu / i915 / xe = Linux 的显卡驱动 sysfs
     pub source: String,
 }
 
-/// GPU 汇总：概览大数字用主卡（占用最高的那块），明细走 devices
+/// GPU 汇总：概览大数字用主卡（见 [`GpuInfo::aggregate`] 的挑卡规则），明细走 devices
 #[derive(Serialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct GpuInfo {
     pub available: bool,
     pub devices: Vec<GpuDevice>,
+    /// 被选作主卡的那块设备在 `devices` 里的 `index`（界面据此显示型号，
+    /// 保证「显示的型号」与「显示的数字」是同一块卡）
+    pub main_index: u32,
     pub usage_pct: Option<f32>,
     pub mem_used_bytes: u64,
     pub mem_total_bytes: u64,
@@ -148,22 +152,33 @@ pub struct GpuInfo {
     pub fan_rpm: Option<f32>,
     /// GPU 风扇数据来源；读不到时为空字符串
     pub fan_source: String,
-    /// nvml / pdh / pdh-warming / unavailable
+    /// 列表级来源标识，由 [`GpuInfo::aggregate`] 从各设备的 `source` 汇总而来：
+    /// 去重后按出现顺序用 `+` 连接（如 `nvml+pdh`）；没有任何设备时是 `unavailable`
     pub source: String,
 }
 
 impl GpuInfo {
     /// 按设备列表重新计算汇总值与主卡
+    ///
+    /// 挑卡分两步：先按**数据源分档**（驱动直读优先于通用计数器，见 [`source_rank`]），
+    /// 再在最高档里取占用最高的那块。只按占用挑是不行的 —— 笔记本上核显常年被
+    /// 桌面合成占着几个百分点，插着独显的机器主卡会一直在核显与独显之间跳。
     pub fn aggregate(&mut self) {
         self.available = !self.devices.is_empty();
+        self.main_index = 0;
         if !self.available {
             self.source = "unavailable".to_string();
             return;
         }
-        // 主卡：有占用数据的取占用最高，否则取显存占用最大
-        let main = self
+        self.source = device_sources(&self.devices);
+        let rank = self
             .devices
             .iter()
+            .map(|d| source_rank(&d.source))
+            .min()
+            .unwrap_or(0);
+        let best = || self.devices.iter().filter(move |d| source_rank(&d.source) == rank);
+        let main = best()
             .filter(|d| d.usage_pct.is_some())
             .max_by(|a, b| {
                 a.usage_pct
@@ -171,13 +186,10 @@ impl GpuInfo {
                     .partial_cmp(&b.usage_pct.unwrap_or(0.0))
                     .unwrap_or(std::cmp::Ordering::Equal)
             })
-            .or_else(|| {
-                self.devices
-                    .iter()
-                    .max_by_key(|d| d.mem_used_bytes)
-            });
+            .or_else(|| best().max_by_key(|d| d.mem_used_bytes));
 
         if let Some(m) = main {
+            self.main_index = m.index;
             self.usage_pct = m.usage_pct;
             self.mem_used_bytes = m.mem_used_bytes;
             self.mem_total_bytes = m.mem_total_bytes;
@@ -189,6 +201,30 @@ impl GpuInfo {
         } else {
             self.usage_pct = None;
         }
+    }
+}
+
+/// 列表级来源标识：各设备的来源去重后按出现顺序用 `+` 连接（如 `nvml+pdh`）
+pub fn device_sources(devices: &[GpuDevice]) -> String {
+    let mut out: Vec<&str> = Vec::new();
+    for d in devices {
+        if !out.contains(&d.source.as_str()) {
+            out.push(&d.source);
+        }
+    }
+    out.join("+")
+}
+
+/// 数据源分档（数字越小越优先）：**厂商驱动直读**优于通用计数器兜底。
+/// 只影响「多显卡时谁当主卡」，不影响任何一块卡上报什么值。
+fn source_rank(source: &str) -> u8 {
+    match source {
+        // 厂商驱动直读：NVML（NVIDIA）、amdgpu / i915 / xe（Linux 显卡驱动 sysfs，
+        // 读不到驱动名时退化成 amd / intel 这两个厂商名）
+        "nvml" | "amdgpu" | "amd" | "i915" | "xe" | "intel" => 0,
+        // Windows 的通用性能计数器（所有适配器都能看，但没有温度 / 功耗）
+        "pdh" => 1,
+        _ => 2,
     }
 }
 
@@ -302,5 +338,70 @@ mod tests {
     fn percent_guard() {
         assert_eq!(percent_of(0, 0), 0.0);
         assert_eq!(percent_of(512, 1024), 50.0);
+    }
+
+    fn dev(index: u32, name: &str, source: &str, usage: Option<f32>, mem: u64) -> GpuDevice {
+        GpuDevice {
+            index,
+            name: name.to_string(),
+            usage_pct: usage,
+            mem_used_bytes: mem,
+            source: source.to_string(),
+            ..GpuDevice::default()
+        }
+    }
+
+    #[test]
+    fn main_card_prefers_driver_source_over_higher_igpu_usage() {
+        // 插着独显的笔记本：核显被桌面合成占着 20%，独显在 3%，主卡应仍是独显
+        let mut info = GpuInfo {
+            devices: vec![
+                dev(0, "Intel(R) UHD Graphics", "pdh", Some(20.0), 1 << 30),
+                dev(1, "NVIDIA GeForce RTX 3060 Laptop GPU", "nvml", Some(3.0), 2 << 30),
+            ],
+            ..GpuInfo::default()
+        };
+        info.aggregate();
+        assert!(info.available);
+        assert_eq!(info.main_index, 1, "主卡是驱动直读的那块");
+        assert_eq!(info.usage_pct, Some(3.0));
+        assert_eq!(info.mem_used_bytes, 2 << 30);
+    }
+
+    #[test]
+    fn main_card_takes_highest_usage_within_one_source() {
+        let mut info = GpuInfo {
+            devices: vec![
+                dev(0, "Radeon 780M", "amdgpu", Some(8.0), 1 << 30),
+                dev(1, "Radeon RX 7900 XTX", "amdgpu", Some(61.0), 6 << 30),
+            ],
+            ..GpuInfo::default()
+        };
+        info.aggregate();
+        assert_eq!(info.main_index, 1);
+        assert_eq!(info.usage_pct, Some(61.0));
+    }
+
+    #[test]
+    fn main_card_falls_back_to_memory_when_no_usage_anywhere() {
+        let mut info = GpuInfo {
+            devices: vec![
+                dev(0, "Intel(R) UHD Graphics", "pdh", None, 1 << 30),
+                dev(1, "AMD Radeon RX 6800", "pdh", None, 3 << 30),
+            ],
+            ..GpuInfo::default()
+        };
+        info.aggregate();
+        assert_eq!(info.main_index, 1, "都没占用数据时看显存占用");
+        assert_eq!(info.usage_pct, None);
+    }
+
+    #[test]
+    fn aggregate_without_devices_reports_unavailable() {
+        let mut info = GpuInfo::default();
+        info.aggregate();
+        assert!(!info.available);
+        assert_eq!(info.source, "unavailable");
+        assert_eq!(info.main_index, 0);
     }
 }
