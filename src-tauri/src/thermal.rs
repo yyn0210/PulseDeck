@@ -1,8 +1,9 @@
 //! CPU 温度采集 —— 多源探测 + 有效性过滤
 //!
 //! Windows 不像 Linux 有统一的 hwmon 接口，CPU 温度只能这样拿，按优先级：
-//! 1. **Intel MSR（经 PawnIO 驱动）**——直接读片内 DTS 寄存器，最准；
-//!    读 MSR 要管理员权限，故实际读取在提权桥接子进程里做，这里只读它写出的状态文件
+//! 1. **CPU 片内温度直读（经 PawnIO 驱动）**——Intel 读 MSR 的 DTS 寄存器、AMD 读
+//!    SMN 的 `THM_TCON_CUR_TMP`，都是片内传感器给的原始读数，最准；
+//!    两者都需要管理员权限，故实际读取在提权桥接子进程里做，这里只读它写出的状态文件
 //!    （见 `msr_bridge.rs` / `pawnio.rs`）；
 //! 2. LibreHardwareMonitor / OpenHardwareMonitor 的 WMI 传感器
 //!    —— **注意**：LHM 自 0.9.5 起已删除 WMI 提供程序，这条实际只对 OHM（或 LHM ≤ 0.9.4）有效；
@@ -20,8 +21,12 @@ use crate::pdh::Query;
 use crate::wmi::HwTemp;
 
 const THERMAL_PATH: &str = r"\Thermal Zone Information(*)\Temperature";
-/// Intel / AMD RAPL 包功耗（PDH Energy Meter，单位为 mW）。
-/// 老平台或虚拟机没有这个计数器，取不到时只是少一个读数，不影响温度。
+/// Intel RAPL 的包功耗（PDH Energy Meter，单位为 mW）。
+///
+/// 这个 PDH 计数器只在 Intel 平台存在；**AMD 没有对应的用户态计数器**，其封装功耗
+/// 改由提权桥接子进程读 MSR 能量计数器（`MSR_PKG_ENERGY_STAT`）差分得出，见
+/// `pawnio.rs` 的 `AmdTempReader::package_power_w`。
+/// 老平台或虚拟机连 Intel 计数器也没有，取不到时只是少一个读数，不影响温度。
 const POWER_PATH: &str = r"\Energy Meter(*)\Power";
 
 /// WMI 查询较慢，失败后至少隔这么久再试
@@ -41,6 +46,15 @@ struct PdhSample {
     cpu_power_w: Option<f32>,
 }
 
+/// 提权桥接进程本拍给出的读数（状态文件里有什么就是什么）
+#[derive(Default)]
+struct BridgeSample {
+    /// (温度, 来源描述)——来源由桥接按真实后端写明，界面直接展示
+    temp: Option<(f32, String)>,
+    /// CPU 封装功耗（W）。目前只有 AMD 会填（Intel 侧由 PDH RAPL 提供）
+    power_w: Option<f32>,
+}
+
 // PDH 句柄不被跨线程共享，仅随 probe 整体移交，标记为 Send 即可
 unsafe impl Send for PdhThermal {}
 
@@ -55,7 +69,7 @@ pub struct ThermalProbe {
     next_acpi_wmi_probe: Instant,
     /// 上一次的失败原因，用于给前端展示
     last_hint: String,
-    /// MSR 通道（提权桥接进程）的失败原因，优先级高于 last_hint
+    /// 温度直读通道（提权桥接进程）的失败原因，优先级高于 last_hint
     msr_hint: String,
 }
 
@@ -85,16 +99,20 @@ impl ThermalProbe {
 
         // CPU 封装功耗（RAPL）走同一条 PDH 查询，温度无论用哪个源都要先取一次
         let pdh = self.sample_pdh();
+        // 提权桥接的状态文件本拍只读一次（温度 + AMD 封装功耗都在里面）
+        let bridge = self.sample_bridge();
+        // 功耗来源：PDH（Intel RAPL）优先；AMD 没有 PDH 计数器，用桥接差分出的那个
+        let cpu_power_w = pdh.cpu_power_w.or(bridge.power_w);
 
-        // 优先级 1：Intel MSR（PawnIO 提权桥接进程供数），片内 DTS 最准
-        if let Some(t) = self.sample_msr() {
+        // 优先级 1：片内温度直读（PawnIO 提权桥接进程供数），Intel 走 MSR、AMD 走 SMN
+        if let Some((temp, source)) = bridge.temp {
             return ThermalInfo {
-                cpu_temp_c: Some(t),
-                cpu_source: "Intel MSR".to_string(),
+                cpu_temp_c: Some(temp),
+                cpu_source: source,
                 gpu_temp_c: self.gpu_temp_from_hw(),
                 gpu_source: "hwmonitor".to_string(),
                 available: true,
-                cpu_power_w: pdh.cpu_power_w,
+                cpu_power_w,
                 hint: String::new(),
             };
         }
@@ -108,7 +126,7 @@ impl ThermalProbe {
                     gpu_temp_c: pick_gpu_temp(temps),
                     gpu_source: source.clone(),
                     available: true,
-                    cpu_power_w: pdh.cpu_power_w,
+                    cpu_power_w,
                     hint: String::new(),
                 };
             }
@@ -124,7 +142,7 @@ impl ThermalProbe {
                     gpu_temp_c: self.gpu_temp_from_hw(),
                     gpu_source: "hwmonitor".to_string(),
                     available: true,
-                    cpu_power_w: pdh.cpu_power_w,
+                    cpu_power_w,
                     hint: String::new(),
                 };
             }
@@ -138,7 +156,7 @@ impl ThermalProbe {
                 gpu_temp_c: self.gpu_temp_from_hw(),
                 gpu_source: "hwmonitor".to_string(),
                 available: true,
-                cpu_power_w: pdh.cpu_power_w,
+                cpu_power_w,
                 hint: String::new(),
             };
         }
@@ -155,8 +173,8 @@ impl ThermalProbe {
                 "不可用".to_string()
             },
             available: false,
-            cpu_power_w: pdh.cpu_power_w,
-            // MSR 通道的原因更具体（未提权 / 未装 PawnIO / 非 Intel），优先展示
+            cpu_power_w,
+            // 直读通道的原因更具体（未提权 / 未装 PawnIO / CPU 不在支持范围），优先展示
             hint: if self.msr_hint.is_empty() {
                 self.last_hint.clone()
             } else {
@@ -165,19 +183,30 @@ impl ThermalProbe {
         }
     }
 
-    /// 读提权桥接进程写出的 MSR 温度。文件读得很轻（几百字节），每次采样都读即可。
-    fn sample_msr(&mut self) -> Option<f32> {
-        let state = crate::msr_bridge::read_fresh_state()?;
+    /// 读提权桥接进程写出的状态。文件读得很轻（几百字节），每次采样都读即可。
+    ///
+    /// 来源描述也取自状态文件：桥接按**真实后端**写明是 `Intel MSR (PawnIO)`
+    /// 还是 `AMD SMN (PawnIO)`，这里不硬编码，免得界面上把 AMD 的读数标成 Intel。
+    fn sample_bridge(&mut self) -> BridgeSample {
+        let Some(state) = crate::msr_bridge::read_fresh_state() else {
+            return BridgeSample::default();
+        };
         match state.cpu_temp_c {
             Some(t) => {
                 self.msr_hint.clear();
-                Some(t)
+                BridgeSample {
+                    temp: Some((t, state.source)),
+                    power_w: state.cpu_power_w,
+                }
             }
             None => {
                 if let Some(err) = state.error {
                     self.msr_hint = format!("CPU 温度未取到：{err}");
                 }
-                None
+                BridgeSample {
+                    power_w: state.cpu_power_w,
+                    ..Default::default()
+                }
             }
         }
     }
@@ -273,7 +302,8 @@ impl ThermalProbe {
 
 /// 从 Energy Meter 的实例列表里挑出 CPU 封装功耗（mW → W）
 ///
-/// 实测实例形如 `rapl_package0_pkg`（整包）、`rapl_package0_pp0`（核心）、
+/// 这是 **Intel** 侧的功耗来源（AMD 的实例名不在这里，其功耗走桥接读 MSR）。
+/// 实测 Intel 的实例形如 `rapl_package0_pkg`（整包）、`rapl_package0_pp0`（核心）、
 /// `rapl_package0_pp1`、`rapl_package0_dram`；`_total` 恒为 0，不能直接取。
 /// 优先 `*_pkg`，没有时退回所有非 `_total` 实例里的最大值。
 fn pick_cpu_power(items: &[(String, f64)]) -> Option<f32> {
@@ -339,5 +369,5 @@ fn pick_gpu_temp(temps: &[HwTemp]) -> Option<f32> {
         .reduce(f32::max)
 }
 
-/// 兜底提示：连 MSR 都没拿到时的通用说明
-const HINT_NO_SENSOR: &str = "未检测到可用的温度传感器。Intel 平台可让本工具以管理员身份启动（会读 CPU 的 MSR），AMD 平台暂依赖 ACPI/PDH。";
+/// 兜底提示：连片内直读通道都没拿到时的通用说明（Intel / AMD 两条路都适用）
+const HINT_NO_SENSOR: &str = "未检测到可用的温度传感器。可在设置页「高级采集」里启用 CPU 温度直读（Intel 读 MSR、AMD 读 SMN，需要一次管理员授权），或安装 OpenHardwareMonitor 等硬件监控软件补齐。";

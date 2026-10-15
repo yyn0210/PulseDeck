@@ -721,7 +721,7 @@ fn read_variant(v: &VARIANT) -> Prop {
 /// （0.9.0~0.9.4 才有 `WMI/WmiProvider.cs`），所以 `root\LibreHardwareMonitor` 在
 /// 新版 LHM 上永远不存在。这里保留这两个命名空间只是为了兼容
 /// **OpenHardwareMonitor** 以及**旧版 LHM（≤ 0.9.4）**；本工具自己的 CPU 温度主通道是
-/// 「PawnIO + Intel MSR」（见 `pawnio.rs`）。
+/// 「PawnIO 直读片内传感器」（Intel 读 MSR、AMD 读 SMN，见 `pawnio.rs`）。
 const THERMAL_NAMESPACES: [&str; 2] = ["root\\LibreHardwareMonitor", "root\\OpenHardwareMonitor"];
 
 /// 一条温度传感器读数
@@ -1045,7 +1045,8 @@ fn fan_rpm_from(out: &[(String, f64)], fan_id: u8) -> Option<f32> {
 /// 联想的 `Fan_GetCurrentSensorTemperature` 返回的是**整数值**，实测其量纲为
 /// 摄氏度（曲线表里的阈值 32~110 与之对应）。仅作交叉校验用，不作为温度主源。
 ///
-/// 当前 CPU 温度主源是 PawnIO + Intel MSR（`thermal.rs`），本函数**尚未接线**；
+/// 当前 CPU 温度主源是 PawnIO 直读片内传感器（Intel MSR / AMD SMN，见 `thermal.rs`），
+/// 本函数**尚未接线**；
 /// 保留是因为它与风扇同属一次提权调用，将来要做温度交叉校验时可直接用
 /// （`diag::probe_fan` 会打印各 SensorID 的读数，便于判断可用性）。
 #[allow(dead_code)]

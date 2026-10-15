@@ -42,6 +42,11 @@ mod msr_bridge;
 /// macOS 等未适配平台暂时闲置，先允许。
 #[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
 mod battery;
+/// CPU 厂商识别（跨平台）：温度直读通道按厂商分流（Intel 走 MSR、AMD 走 SMN），
+/// 判断只依赖 sysinfo 的品牌串，所以放在公共层、各平台都能编译与自测。
+/// 目前只有 Windows 的提权桥接真的用它（Linux 侧 hwmon 不需要分厂商），先允许闲置。
+#[cfg_attr(not(windows), allow(dead_code))]
+mod cpu_vendor;
 mod fan_pref;
 mod model;
 mod pet;
@@ -743,9 +748,10 @@ pub fn run() {
                     }
                 }
 
-                // 后台拉起「MSR 温度桥接」子进程（提权 + 隐藏窗口），不阻塞主窗口启动（Windows）。
+                // 后台拉起「CPU 温度直读桥接」子进程（提权 + 隐藏窗口），不阻塞主窗口启动（Windows）。
                 // 资源目录来自 Tauri 的 Resource 目录（由 bundle.resources 打进安装包），
-                // 温度模块位于 <resource_dir>/pawnio/IntelMSR.bin。
+                // 温度模块位于 <resource_dir>/pawnio/{IntelMSR,AMDFamily17}.bin，
+                // 载哪个由 CPU 厂商决定（见 msr_bridge.rs 的 launch_bridge）。
                 // 只有当读数缺失/过期时才拉，且一个会话只尝试一次（避免 UAC 轰炸）。
                 #[cfg(windows)]
                 if let Ok(resource_dir) = app.path().resource_dir() {
@@ -1048,35 +1054,52 @@ mod diag {
         println!("thermal probe dropped OK");
     }
 
-    /// PawnIO 直连是否可用：设备能否打开、模块能否载入、MSR 温度能否读出
+    /// PawnIO 直连是否可用：设备能否打开、模块能否载入、温度能否读出
     ///
     /// 需要有管理员权限才有意义——未提权时会在「打开设备」这一步就报访问被拒绝。
+    /// 两个模块都会试着载一次：载错厂商的那个会被模块自己以 `STATUS_NOT_SUPPORTED`
+    /// 拒绝（IntelMSR 校验 CPUID 厂商、AMDFamily17 校验厂商与 family 17h~1Ah），
+    /// 所以这条输出同时验证了「模块与 CPU 匹配」这件事。
     #[test]
     fn pawnio_msr() {
-        let module = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("resources")
-            .join("pawnio")
-            .join("IntelMSR.bin");
+        let vendor = super::cpu_vendor::detect();
+        println!("cpu vendor    = {}", vendor.label());
         println!(
-            "module = {} ({})",
-            module.display(),
-            if module.exists() { "存在" } else { "缺失" }
+            "expected file = {}",
+            super::pawnio::module_file(vendor).unwrap_or("（该厂商没有直读通道）")
         );
 
-        match std::fs::read(&module) {
-            Ok(blob) => match super::pawnio::IntelTempReader::open(&blob) {
-                Ok(reader) => {
-                    println!("tjmax         = {:.0} °C", reader.tjmax());
-                    println!("package temp  = {:?} °C", reader.package_temp());
-                }
-                Err(e) => println!("打开 / 载入失败：{e}"),
-            },
-            Err(e) => println!("读取模块文件失败：{e}"),
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join("pawnio");
+        for file in ["IntelMSR.bin", "AMDFamily17.bin"] {
+            let module = dir.join(file);
+            println!(
+                "\n--- {file}（{}）---",
+                if module.exists() { "存在" } else { "缺失" }
+            );
+            match std::fs::read(&module) {
+                Ok(blob) => match super::pawnio::CpuTempReader::open(vendor, &blob) {
+                    Ok(reader) => {
+                        println!("source        = {}", reader.source());
+                        if let Some(t) = reader.tjmax() {
+                            println!("tjmax         = {t:.0} °C");
+                        }
+                        println!("package temp  = {:?} °C", reader.package_temp());
+                        let mut reader = reader;
+                        println!("package power = {:?} W（首拍无差分，属正常）", reader.package_power_w());
+                        std::thread::sleep(std::time::Duration::from_millis(1000));
+                        println!("package power = {:?} W（1 s 后）", reader.package_power_w());
+                    }
+                    Err(e) => println!("打开 / 载入失败：{e}"),
+                },
+                Err(e) => println!("读取模块文件失败：{e}"),
+            }
         }
 
         match super::msr_bridge::read_fresh_state() {
-            Some(st) => println!("bridge state  = {st:?}"),
-            None => println!("bridge state  = 无新鲜读数（桥接进程未在运行）"),
+            Some(st) => println!("\nbridge state  = {st:?}"),
+            None => println!("\nbridge state  = 无新鲜读数（桥接进程未在运行）"),
         }
     }
 

@@ -12,7 +12,7 @@
 | 组件 | 许可 | 说明 |
 | --- | --- | --- |
 | `PawnIO_setup.exe` | 专有(All rights reserved) | 官方安装器,**仅允许原样再分发**(其许可原文 "This installer can be redistributed unmodified");未做任何修改,详见 `resources/pawnio/NOTICE.md` |
-| `IntelMSR.bin` | LGPL-2.1 | namazso/PawnIO.Modules v0.1.6 官方签名模块,原样分发,许可全文随包(`resources/pawnio/COPYING`) |
+| `IntelMSR.bin` / `AMDFamily17.bin` | LGPL-2.1 | namazso/PawnIO.Modules v0.2.3 官方签名模块(Intel 读 MSR、AMD 读 SMN),原样分发,许可全文随包(`resources/pawnio/COPYING`);逐文件 SHA-256 见 `resources/pawnio/NOTICE.md` |
 | PawnIO 驱动(由上述安装器安装) | GPL-2.0(含 DeviceIoControl 例外) | 本程序仅经 `DeviceIoControl` 与驱动通信,属例外明确豁免的情形;驱动由其官方安装器独立安装 |
 | 微软 WebView2 Runtime | 微软免费再分发运行时 | 由系统/微软渠道提供,非本包内容 |
 

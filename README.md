@@ -48,8 +48,8 @@
 - **一个面板看全整机**：CPU（占用 / 每核 / 主频 / 温度 / 风扇）、内存（含已提交内存、页面文件）、
   硬盘（容量 / 读写速率 / 累计量）、电池与电源功率（含 CPU 封装功耗）、GPU（占用 / 显存 / 温度 / 功耗 / 风扇）、
   网络（速率 / 累计流量 / 每网卡明细）、Top 进程榜（CPU / 内存各 8）
-- **温度与风扇读数是真的**：CPU 温度走 PawnIO + Intel MSR 直读片内 DTS（最准路径），
-  联想机型还能读厂商私有的真实风扇 RPM——绝不拿占空比冒充转速
+- **温度与风扇读数是真的**：CPU 温度走 PawnIO 直读片内传感器（ **Intel 读 MSR 的 DTS、AMD 读 SMN** ，
+  最准路径），联想机型还能读厂商私有的真实风扇 RPM——绝不拿占空比冒充转速
 - **桌面宠物**：置顶小狐狸在桌面上跑动，显示 CPU / 内存 / GPU 使用率，
   **形象随 CPU 温度 6 档切换**（38 蓝 → 94 红），过热档还会加速喘气
 - **任务栏显示**：把 CPU / 内存 / GPU / 网络 / 磁盘 / 电池 / 温度 / 功率贴在 Windows 任务栏上的一条
@@ -134,8 +134,8 @@ Linux 上**不需要 PawnIO**：CPU 温度 / 风扇 / 电池 / 已提交内存�
 `/sys/class/power_supply` 与 `/proc/meminfo`，普通权限直读，设置页也不会出现 Windows 的
 「高级采集」区块。
 
-**关于高级采集（可选，仅 Windows）**：CPU 温度最准的路径（读 MSR）与联想风扇转速需要内核驱动 PawnIO。
-本工具**绝不静默安装**——未安装时只是顶部多一条可关闭的提醒，安装入口在
+**关于高级采集（可选，仅 Windows）**：CPU 温度最准的路径（Intel 读 MSR、AMD 读 SMN）与联想风扇
+转速需要内核驱动 PawnIO。本工具**绝不静默安装**——未安装时只是顶部多一条可关闭的提醒，安装入口在
 **设置 → 高级采集**，点按钮确认一次 UAC 即可（安装器随包分发，全程离线可用）。
 不装也能正常使用，温度会回退到 ACPI / PDH 通道。
 
@@ -208,8 +208,8 @@ Linux 上**不需要 PawnIO**：CPU 温度 / 风扇 / 电池 / 已提交内存�
 | --- | --- | --- | --- |
 | CPU / 内存 / 磁盘 / 网络 / 进程（sysinfo） | ✅ | ✅ | ✅ |
 | GPU（占用 / 显存 / 温度 / 功耗 / 风扇） | NVML + PDH 兜底 | NVML + amdgpu sysfs 兜底 | — |
-| CPU 温度 | PawnIO MSR（提权桥接）→ LHM → ACPI → PDH 四级 | hwmon（coretemp / k10temp / zenpower） | — |
-| CPU 封装功耗 | PDH RAPL | RAPL powercap（Intel） | — |
+| CPU 温度 | PawnIO 直读 MSR（Intel）/ SMN（AMD）→ LHM → ACPI → PDH 四级 | hwmon（coretemp / k10temp / zenpower） | — |
+| CPU 封装功耗 | PDH RAPL（Intel）/ MSR 能量计数器（AMD） | RAPL powercap（Intel） | — |
 | 风扇转速 | 联想厂商通道 / LHM / ACPI | hwmon fan / pwm | — |
 | 电池与充电功率 | CallNtPowerInformation | `/sys/class/power_supply` | — |
 | 已提交内存 | GlobalMemoryStatusEx | `/proc/meminfo`（Committed_AS） | — |
@@ -222,10 +222,13 @@ macOS 的温度 / 风扇 / 电池功率需要 Mac 才能开发与验证（IOKit 
 
 ### 关键通道
 
-- **CPU 温度**：PawnIO + Intel MSR 直读片内 DTS 寄存器（最准，需管理员，一次 UAC）→
+- **CPU 温度**：PawnIO 直读片内传感器（最准，需管理员，一次 UAC）——
+  **Intel 读 MSR 的 DTS 寄存器（`0x1B1` / `0x19C`），AMD 读 SMN 的 `THM_TCON_CUR_TMP`**，
+  两个模块都随包分发、官方签名，装完 PawnIO 驱动即可用 →
   硬件监控软件的 WMI `Sensor` 表（只对 OpenHardwareMonitor / 旧版 LHM ≤ 0.9.4 有效）→
   ACPI 热区 `MSAcpi_ThermalZoneTemperature`（联想等机型免装软件即可读到）→ PDH（含有效性校验）。
-  四层都拿不到就显示 `--` 并给出原因。**只内置 Intel 模块，AMD 平台暂不支持 MSR 直读**。
+  四层都拿不到就显示 `--` 并给出原因。AMD 侧要求 **Zen 架构（family 17h~1Ah）**，
+  更早的 AMD 平台仍只能靠 ACPI / PDH。
 - **风扇转速**：Windows 没有任何公开的用户态接口。联想机型可走厂商私有 ACPI-WMI 通道读到
   **真实 RPM**（需管理员，与 CPU 温度共用同一个提权子进程，一次 UAC 同时搞定两者）；
   其余机器靠硬件监控软件的 WMI `Sensor` 或 ACPI `Win32_Fan`（绝大多数机器该字段为空）。
@@ -233,7 +236,8 @@ macOS 的温度 / 风扇 / 电池功率需要 Mac 才能开发与验证（IOKit 
   展示口径：**优先真实 RPM，其次占空比 `%`，两者都没有才显示 `--`**。
 - **GPU**：NVIDIA 走 NVML（占用 / 显存 / 温度 / 功耗 / 风扇）；非 N 卡走 PDH 计数器（占用 / 显存）。
 - **电源功率**：Windows 只公开电池的充放电速率，**不公开适配器输出功率**；「电源功率」卡片同时给
-  电池实时功率与 CPU 封装功耗（RAPL），已接入但未充电时明确显示 `0.0 W`，不留空。
+  电池实时功率与 CPU 封装功耗（Intel 走 PDH RAPL，AMD 走 MSR 能量计数器），
+  已接入但未充电时明确显示 `0.0 W`，不留空。
 - **读不到时的求助入口**：设置页「高级采集」会写明每个通道的状态与具体原因；
   提权桥接的失败明细在 `%LOCALAPPDATA%\PulseDeck\pawnio.log`。
 
@@ -279,7 +283,9 @@ npm run build:exe  # 只出二进制（跳过安装包）
 - **支持 Windows x64 与 Linux x64**（安装包见[下载与安装](#下载与安装)）；macOS 暂无计划——
   温度 / 风扇 / 电池功率等高级指标需要 IOKit / SMC，得有 Mac 才能开发验证；
   两平台各自的采集通道差异见[平台支持矩阵](#平台支持矩阵)；
-- **AMD 平台暂不支持 MSR 直读**：CPU 温度回退 ACPI 热区 / PDH，能否读到取决于固件；
+- **AMD 平台支持 Zen 架构（family 17h~1Ah）的 CPU 温度直读**：走 PawnIO + SMN，与 Intel 的
+  MSR 路径同一个提权子进程；**更早的 AMD 平台（FX / Phenom 等）**仍只能靠 ACPI 热区 / PDH，
+  能否读到取决于固件；GPU 侧的 AMD 读数（占用 / 显存）走 PDH 计数器，**A 卡温度暂不支持**；
 - **非联想机型的 CPU 风扇读不到**：风扇挂在主板 Super I/O / EC 上，通用接口不存在
   （引入第三方监控服务 / 直读 Super I/O 的方案已评估并否决）；
 - **笔记本 N 卡风扇普遍 `N/A`**（由 EC 控制，NVML 读不到），桌面 N 卡常有值；
@@ -321,7 +327,7 @@ npm run build:exe  # 只出二进制（跳过安装包）
 - [sysinfo](https://github.com/GuillaumeGomez/sysinfo) —— CPU / 内存 / 磁盘 / 网络采样
 - [nvml-wrapper](https://github.com/Cldfire/nvml-wrapper) —— NVIDIA NVML 绑定
 - [PawnIO](https://pawnio.eu)（[namazso](https://github.com/namazso)）—— 通用内核 IO 驱动；
-  IntelMSR 模块来自 [namazso/PawnIO.Modules](https://github.com/namazso/PawnIO.Modules)
+  IntelMSR / AMDFamily17 模块来自 [namazso/PawnIO.Modules](https://github.com/namazso/PawnIO.Modules)
 - [OpenHardwareMonitor](https://openhardwaremonitor.org) / [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor)
   —— WMI `Sensor` 通道的兼容对象与 PawnIO 安装器分发先例
 - 厂商风扇通道的适配参考了联想 LegionZone 的可观察行为；同一组标准 WMI 接口亦被 LenovoLegionToolkit 等开源社区工具广泛使用
@@ -336,7 +342,7 @@ npm run build:exe  # 只出二进制（跳过安装包）
 | 组件 | 许可 | 分发要求 |
 | -- | -- | -- |
 | `PawnIO_setup.exe`（官方安装器） | 专有（All rights reserved） | **仅允许原样（unmodified）再分发**，改一个字节即违约且破坏 Authenticode 签名 |
-| `IntelMSR.bin`（PawnIO 模块） | LGPL-2.1 | 来源 namazso/PawnIO.Modules v0.1.6 |
+| `IntelMSR.bin` / `AMDFamily17.bin`（PawnIO 模块） | LGPL-2.1 | 来源 namazso/PawnIO.Modules v0.2.3，官方签名、原样分发（逐文件 SHA-256 见 `NOTICE.md`） |
 
 随包分发的**全部第三方内容**——上表组件、宠物贴图的 AI 素材来源、全部 Rust/npm 依赖清单
 及其许可证全文——汇总记录在 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。

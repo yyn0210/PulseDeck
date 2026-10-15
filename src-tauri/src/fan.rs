@@ -23,8 +23,8 @@
 //!
 //! CPU 侧的历史现状：CPU 风扇挂在主板的 Super I/O / EC 上，而**笔记本根本不用
 //! Super I/O**（风扇由 EC 直接管理，Linux 7.1 的 `yogafan` 文档有明确说明）。
-//! 本工具已有的 PawnIO + `IntelMSR.bin` 只能读 MSR，**不含** EC 读取函数，
-//! 因此无法复用。联想机型改走其 ACPI-WMI 私有通道（见上表第一行）。
+//! 本工具已有的 PawnIO 模块（`IntelMSR.bin` 读 MSR、`AMDFamily17.bin` 读 SMN）
+//! **都不含** EC 读取函数，因此无法复用。联想机型改走其 ACPI-WMI 私有通道（见上表第一行）。
 
 use std::time::{Duration, Instant};
 

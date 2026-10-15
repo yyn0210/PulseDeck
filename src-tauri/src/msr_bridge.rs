@@ -1,9 +1,12 @@
 //! CPU 温度提权桥接进程
 //!
-//! 读 MSR 需要管理员权限（PawnIO 设备只对管理员开放），但主程序是普通权限运行的。
-//! 所以这里把「读 MSR」拆成一个**独立的提权子进程**：仍然是本 exe，只是带上
+//! 直读 CPU 温度（Intel 走 MSR、AMD 走 SMN，见 `pawnio.rs`）需要管理员权限
+//! （PawnIO 设备只对管理员开放），但主程序是普通权限运行的。
+//! 所以这里把「读温度」拆成一个**独立的提权子进程**：仍然是本 exe，只是带上
 //! `--pawnio-bridge` 参数用 `runas` 重新拉起（隐藏窗口），它每秒读一次温度，
 //! 写进一个几百字节的 JSON 文件；主进程（普通权限）直接读该文件即可。
+//! 载入哪个模块由调用方按 CPU 厂商决定（`--module`），本进程再自己复核一遍厂商，
+//! 防止参数与真机不符时静默读到错的寄存器。
 //!
 //! 为什么用文件而不是管道：`ShellExecuteExW` + `runas` **无法重定向 stdout**，
 //! 传文件是最省事、也最不容易出问题的跨权限数据通道（覆盖写 + 原子改名）。
@@ -35,7 +38,8 @@ use windows::Win32::System::Threading::{
     OpenProcess, WaitForSingleObject, PROCESS_ACCESS_RIGHTS, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 
-use crate::pawnio::IntelTempReader;
+use crate::cpu_vendor::{self, CpuVendor};
+use crate::pawnio::{self, CpuTempReader};
 use crate::pawnio_setup::{self, Probe};
 
 /// 子进程模式开关
@@ -55,10 +59,14 @@ pub struct MsrState {
     pub parent_pid: u32,
     pub cpu_temp_c: Option<f32>,
     pub tjmax_c: Option<f32>,
-    /// 数据来源描述，直接展示在界面上
+    /// 数据来源描述，直接展示在界面上（`Intel MSR (PawnIO)` / `AMD SMN (PawnIO)`）
     pub source: String,
     /// 失败原因（成功时为 None）
     pub error: Option<String>,
+    /// CPU 封装功耗（W），目前只有 AMD 会填（读 MSR 能量计数器求差）。
+    /// Intel 的功耗有更好的来源（主进程侧 PDH RAPL），不必绕到这里。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_power_w: Option<f32>,
     /// 联想机型上的风扇转速：`FanID -> RPM`。
     ///
     /// 之所以搭桥接的便车：联想的 `LENOVO_FAN_METHOD` 实测**也要管理员权限**
@@ -79,26 +87,29 @@ pub struct LenovoFan {
 }
 
 impl MsrState {
-    fn ok(temp: f32, tjmax: f32) -> Self {
+    /// 一次成功的温度读数。`tjmax` 只有 Intel 有（AMD 的 SMN 寄存器不提供这个上限）。
+    fn ok(temp: f32, tjmax: Option<f32>, source: &str) -> Self {
         Self {
             ts: now_secs(),
             parent_pid: parent_pid_from_env(),
             cpu_temp_c: Some(temp),
-            tjmax_c: Some(tjmax),
-            source: "Intel MSR (PawnIO)".to_string(),
+            tjmax_c: tjmax,
+            source: source.to_string(),
             error: None,
+            cpu_power_w: None,
             lenovo_fans: None,
         }
     }
 
-    fn err(msg: String) -> Self {
+    fn err(msg: String, source: &str) -> Self {
         Self {
             ts: now_secs(),
             parent_pid: parent_pid_from_env(),
             cpu_temp_c: None,
             tjmax_c: None,
-            source: "Intel MSR (PawnIO)".to_string(),
+            source: source.to_string(),
             error: Some(msg),
+            cpu_power_w: None,
             lenovo_fans: None,
         }
     }
@@ -164,7 +175,8 @@ pub fn run_if_requested() -> bool {
             .and_then(|i| args.get(i + 1))
             .cloned()
     };
-    let module = get("--module").map(PathBuf::from).unwrap_or_default();
+    // 不带 `--module` 表示该 CPU 厂商没有可用的直读模块（见 `pawnio::module_file`）
+    let module = get("--module").map(PathBuf::from);
     let out = get("--out").map(PathBuf::from).unwrap_or_else(state_path);
     // 先写进环境变量，让 MsrState 能把 parentPid 一起带上
     if let Some(pid) = get("--parent-pid") {
@@ -176,12 +188,19 @@ pub fn run_if_requested() -> bool {
     // 带这个开关意味着「用户已同意安装 PawnIO」，见文件开头的说明
     let install_if_missing = args.iter().any(|a| a == INSTALL_FLAG);
 
-    run_bridge(&module, &out, parent, install_if_missing);
+    run_bridge(module.as_deref(), &out, parent, install_if_missing);
     true
 }
 
+/// 依据 CPU 厂商给出要载入的 PawnIO 模块路径（`None` = 该厂商没有直读通道）。
+///
+/// 抽成纯函数是为了能单测「厂商 → 模块文件 → 随包是否真的存在」这条链。
+fn module_path_for(resource_dir: &Path, vendor: CpuVendor) -> Option<PathBuf> {
+    pawnio::module_file(vendor).map(|file| resource_dir.join("pawnio").join(file))
+}
+
 /// 桥接主循环：读温度 → 写状态 → 父进程没了就退出
-fn run_bridge(module: &Path, out: &Path, parent_pid: u32, install_if_missing: bool) {
+fn run_bridge(module: Option<&Path>, out: &Path, parent_pid: u32, install_if_missing: bool) {
     // 先守望父进程：拿不到句柄（父进程已经不在了 / 权限不足）就立刻收尾。
     // 看不住父进程的桥接进程只会变成没人管的孤儿，不如不跑。
     let Some(parent) = ParentWatch::attach(parent_pid) else {
@@ -191,45 +210,46 @@ fn run_bridge(module: &Path, out: &Path, parent_pid: u32, install_if_missing: bo
         return;
     };
 
-    // 非 Intel 平台读这些 MSR 没有意义，直接给出明确结论，避免反复无效尝试
-    if !is_intel_cpu() {
-        let st = MsrState::err("当前 CPU 不是 Intel，MSR 直读暂不支持（已回退 ACPI / PDH 温度源）".to_string());
-        write_state(out, &st);
-    }
+    // 温度通道按厂商分流（Intel 走 MSR、AMD 走 SMN），这里以真机检测为准——
+    // 命令行传来的模块只是「该载哪个文件」，是否能读最终由模块自己按 CPUID 判定
+    let vendor = cpu_vendor::detect();
+    let source = pawnio::source_label(vendor);
 
     // 用户点了「安装 PawnIO」才会走到这里装；此刻本进程已是管理员，无需二次 UAC
     install_pawnio_if_needed(module, install_if_missing);
 
-    let mut reader: Option<IntelTempReader> = None;
-    let mut last_err = String::from("尚未开始读取");
+    // 每拍都要有一条能解释「为什么没有温度」的原因；没有直读通道的厂商直接给结论，
+    // 免得界面停在「尚未开始读取」这种看不出所以然的文案上
+    let mut reader: Option<CpuTempReader> = None;
+    let mut last_err = match pawnio::module_file(vendor) {
+        Some(_) => String::from("尚未开始读取"),
+        None => format!(
+            "当前 CPU 是{}，没有可用的 MSR / SMN 温度直读通道（已回退 ACPI / PDH 温度源）",
+            vendor.label()
+        ),
+    };
 
     loop {
-        if reader.is_none() && is_intel_cpu() {
-            match std::fs::read(module) {
-                Ok(blob) => match IntelTempReader::open(&blob) {
-                    Ok(r) => {
-                        log_err(&format!("模块已载入，TjMax = {:.0} °C", r.tjmax()));
-                        reader = Some(r);
-                    }
-                    Err(e) => last_err = explain_open_failure(e),
-                },
-                Err(e) => {
-                    last_err = format!("读取温度模块失败：{e}（{}）", module.display());
-                }
-            }
+        if reader.is_none() && pawnio::module_file(vendor).is_some() {
+            reader = load_reader(vendor, module, &mut last_err);
         }
 
         let mut state = match reader.as_ref() {
             Some(r) => match r.package_temp() {
-                Ok(t) => MsrState::ok(t, r.tjmax()),
+                Ok(t) => MsrState::ok(t, r.tjmax(), r.source()),
                 Err(e) => {
                     last_err = e;
-                    MsrState::err(last_err.clone())
+                    MsrState::err(last_err.clone(), source)
                 }
             },
-            None => MsrState::err(last_err.clone()),
+            None => MsrState::err(last_err.clone(), source),
         };
-        // 风扇与温度彼此独立，各自采各自的；合进同一份状态文件（同一次 UAC 的收益）
+        if let Some(r) = reader.as_mut() {
+            // CPU 封装功耗与温度彼此独立：AMD 靠能量计数器差分（Intel 侧由主进程走 PDH，
+            // 这里返回 None）。取不到就不写这个字段，界面照旧显示 `--`。
+            state.cpu_power_w = r.package_power_w();
+        }
+        // 风扇同样与温度彼此独立，各自采各自的；合进同一份状态文件（同一次 UAC 的收益）
         state.lenovo_fans = sample_lenovo_fans();
         write_state(out, &state);
 
@@ -237,6 +257,43 @@ fn run_bridge(module: &Path, out: &Path, parent_pid: u32, install_if_missing: bo
         // 父进程一结束，它的进程对象即被置为有信号态，这里立刻返回 false 并收尾。
         if !parent.alive_after(1000) {
             break;
+        }
+    }
+}
+
+/// 载入该厂商的温度模块。失败原因写进 `last_err`——每拍都会重试，
+/// 用户中途装上 PawnIO 后无需重启就能自愈。
+fn load_reader(
+    vendor: CpuVendor,
+    module: Option<&Path>,
+    last_err: &mut String,
+) -> Option<CpuTempReader> {
+    let Some(path) = module else {
+        *last_err = format!("{} CPU 没有可用的 PawnIO 温度模块", vendor.label());
+        return None;
+    };
+    match std::fs::read(path) {
+        Ok(blob) => match CpuTempReader::open(vendor, &blob) {
+            Ok(reader) => {
+                let detail = match reader.tjmax() {
+                    Some(t) => format!("TjMax = {t:.0} °C"),
+                    None => "SMN 直读（该寄存器不提供 TjMax）".to_string(),
+                };
+                log_err(&format!(
+                    "温度模块已载入：{}（{}，{detail}）",
+                    path.display(),
+                    reader.source()
+                ));
+                Some(reader)
+            }
+            Err(e) => {
+                *last_err = explain_open_failure(vendor, e);
+                None
+            }
+        },
+        Err(e) => {
+            *last_err = format!("读取温度模块失败：{e}（{}）", path.display());
+            None
         }
     }
 }
@@ -293,8 +350,8 @@ impl Drop for ParentWatch {
 
 /// 桥接主循环（风扇部分）：联想机型上读一次所有风扇转速。
 ///
-/// 单独抽出来是因为它**与 MSR 温度彼此独立**——非 Intel 平台照样可能有联想风扇，
-/// 反之 Intel 机型若是其它品牌则没有联想风扇。
+/// 单独抽出来是因为它**与温度彼此独立**——没有直读通道的 CPU 照样可能有联想风扇，
+/// 反之 Intel / AMD 机型若是其它品牌则没有联想风扇。
 ///
 /// 说明：`wmi::lenovo_fans()` 内部依赖 `is_lenovo()` 与 `lenovo_fan_instance()`，
 /// 它们各自有 `OnceLock` 缓存，不会每秒都去查 `Win32_ComputerSystem`。
@@ -324,6 +381,7 @@ impl MsrState {
             tjmax_c: None,
             source: "test".to_string(),
             error: None,
+            cpu_power_w: None,
             lenovo_fans: fans,
         }
     }
@@ -336,11 +394,16 @@ pub fn sample_lenovo_fans_for_test() -> Option<Vec<LenovoFan>> {
 }
 
 /// 设备打开失败时，用探测结果把原因说具体——「没装驱动」是可操作的，值得单独提示
-fn explain_open_failure(raw: String) -> String {
+fn explain_open_failure(vendor: CpuVendor, raw: String) -> String {
     match pawnio_setup::probe() {
         Probe::Missing => {
             "未安装 PawnIO 内核驱动，无法读取 CPU 温度；请在界面上点击「安装 PawnIO」".to_string()
         }
+        // AMD 模块载入时自己按 CPUID 校验：非 AMD、或家族不在 17h~1Ah（Zen 之前 / 未来新家族）
+        // 都会被它以 STATUS_NOT_SUPPORTED 拒绝，此处把「支持范围」讲清楚，免得用户以为是驱动坏了
+        _ if vendor == CpuVendor::Amd => format!(
+            "{raw}（AMD 温度模块只支持 Zen 架构，即 family 17h~1Ah；更早的 AMD 平台暂无温度直读通道）"
+        ),
         _ => raw,
     }
 }
@@ -349,15 +412,15 @@ fn explain_open_failure(raw: String) -> String {
 ///
 /// 本进程已经提权，所以安装器以 `elevate = false` 直接运行，不会再有第二次 UAC。
 /// 安装器就在温度模块旁边（`<resource_dir>/pawnio/`），不用额外传参。
-fn install_pawnio_if_needed(module: &Path, allowed: bool) {
+fn install_pawnio_if_needed(module: Option<&Path>, allowed: bool) {
     if !allowed || pawnio_setup::probe().installed() {
         return;
     }
     let Some(setup) = module
-        .parent()
+        .and_then(Path::parent)
         .map(|dir| dir.join(pawnio_setup::SETUP_FILE_NAME))
     else {
-        log_err("无法定位随包 PawnIO 安装器：温度模块路径没有父目录");
+        log_err("无法定位随包 PawnIO 安装器：没有可用的温度模块路径");
         return;
     };
     log_err(&format!("未检测到 PawnIO，开始静默安装：{}", setup.display()));
@@ -384,16 +447,6 @@ fn write_state(out: &Path, state: &MsrState) {
     if let Err(e) = std::fs::rename(&tmp, out) {
         log_err(&format!("写入状态文件失败：{e}"));
     }
-}
-
-/// 依据 CPU 品牌粗判是否 Intel（`brand` 形如 "12th Gen Intel(R) Core(TM) i9-12900K"）
-fn is_intel_cpu() -> bool {
-    let mut sys = sysinfo::System::new_all();
-    sys.refresh_cpu_all();
-    sys.cpus()
-        .first()
-        .map(|c| c.brand().to_ascii_lowercase().contains("intel"))
-        .unwrap_or(false)
 }
 
 /* ------------------------------ 主进程侧控制 ------------------------------ */
@@ -445,7 +498,14 @@ fn launch_bridge(resource_dir: &Path, install_if_missing: bool) {
         log_err("取不到自身路径，无法拉起桥接进程");
         return;
     };
-    let module = resource_dir.join("pawnio").join("IntelMSR.bin");
+    // 模块按 CPU 厂商选：Intel → IntelMSR.bin（MSR）；AMD → AMDFamily17.bin（SMN）。
+    // 没有直读通道的厂商干脆不带 `--module`：桥接进程照样要跑（联想机型的风扇也要提权
+    // 才能读），只是不读温度。
+    let vendor = cpu_vendor::detect();
+    let module_arg = match module_path_for(resource_dir, vendor) {
+        Some(path) => format!(" --module \"{}\"", path.display()),
+        None => String::new(),
+    };
     let out = state_path();
     let extra = if install_if_missing {
         format!(" {INSTALL_FLAG}")
@@ -453,8 +513,7 @@ fn launch_bridge(resource_dir: &Path, install_if_missing: bool) {
         String::new()
     };
     let params = format!(
-        "{BRIDGE_FLAG} --module \"{}\" --out \"{}\" --parent-pid {}{extra}",
-        module.display(),
+        "{BRIDGE_FLAG}{module_arg} --out \"{}\" --parent-pid {}{extra}",
         out.display(),
         std::process::id()
     );
@@ -556,5 +615,25 @@ mod tests {
         assert!(ParentWatch::attach(0).is_none());
         // 999999 在本机一定不存在（`OpenProcess` 返回 ERROR_INVALID_PARAMETER）
         assert!(ParentWatch::attach(999_999).is_none());
+    }
+
+    /// 桥接要载哪个模块由 CPU 厂商决定，且两个模块都必须随包分发。
+    /// 这条链断了的表现是「AMD 机器上温度一直不可用」且没有报错可查。
+    #[test]
+    fn module_path_follows_cpu_vendor() {
+        let resources = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources");
+        assert!(module_path_for(&resources, CpuVendor::Intel)
+            .expect("Intel 有模块")
+            .ends_with("pawnio/IntelMSR.bin"));
+        assert!(module_path_for(&resources, CpuVendor::Amd)
+            .expect("AMD 有模块")
+            .ends_with("pawnio/AMDFamily17.bin"));
+        // 没有直读通道的厂商：不带 --module，桥接进程不载任何模块
+        assert!(module_path_for(&resources, CpuVendor::Other).is_none());
+        // 路径拼接错 = 永远读不到温度，所以直接把「随包里真的有这两个文件」也测了
+        for vendor in [CpuVendor::Intel, CpuVendor::Amd] {
+            let path = module_path_for(&resources, vendor).unwrap();
+            assert!(path.is_file(), "缺少随包模块：{}", path.display());
+        }
     }
 }
