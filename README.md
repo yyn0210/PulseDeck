@@ -89,6 +89,12 @@
 
 > 窗口默认 **1240×820**、可自由缩放。内容量会随硬件规模（核心数 / 卷数 / 网卡数）变化，
 > 当内容高于窗口时，**页面内部会出现纵向滚动条**——向下滚动即可看到下方全部内容。
+>
+> 窗口没有系统标题栏，顶上那条深色标题栏**是页面自绘的**（三平台统一观感，
+> 顺带解决 Linux（Deepin / GNOME）下系统标题栏与这套深色界面格格不入的问题）：
+> 左端是品牌标记，右端是最小化 / 最大化 / 关闭，整条可拖动、双击切最大化，
+> 四边四角用隐形热区拖拽缩放。实现与踩过的坑见
+> [自绘标题栏与窗口缩放](#自绘标题栏与窗口缩放)。
 
 ## 下载与安装
 
@@ -521,10 +527,42 @@ python tools/verify_bridge_exit.py
 `#app` 固定为 `height:100vh; overflow:hidden`，
 滚动只发生在页面容器内部——**监控页 `.grid`**、**设置页 `.settings-page`**（两者都是
 `flex:1 1 auto; min-height:0; overflow-y:auto`）。切页只切这两个 `<main>` 的 `hidden` 类，
-外壳（topbar / banner / tipbar / statusbar）保持不变。
+外壳（titlebar / topbar / banner / tipbar / statusbar）保持不变。
 关键是 `.grid` 必须声明 **`grid-auto-rows: max-content`**——否则 `.card{min-height:0}`
 会让隐式行的 min-content 贡献为 0，配合默认 `align-content:stretch` 把行均摊拉伸到容器高度、
 压扁卡片。删掉这一行滚动就会失效。
+
+`#app` 的**上内边距是 0**：第一行是自绘标题栏，它用 `margin: 0 calc(-1 * var(--pad-x)) …`
+左右抵消 `#app` 的内边距，好让整条（含两个上角）都能拖——和系统标题栏的手感一致。
+`--pad-x`（默认 16px）就是为这处负外边距留的，改 `#app` 的左右内边距时改它一个地方即可。
+
+### 自绘标题栏与窗口缩放
+
+窗口统一**无系统标题栏**（`tauri.conf.json` 里主窗口 `decorations: false`，三平台一致），
+标题栏与缩放由页面自己提供，三处配合：
+
+| 位置 | 负责 |
+| --- | --- |
+| `index.html` 的 `.titlebar` | 标题栏 DOM：左品牌标记、右三颗窗口按钮，整条打了 `data-tauri-drag-region="deep"`（拖动 + 双击最大化由 Tauri 的 `drag.js` 承担，按钮是 clickable 元素会被自动摘出拖动区） |
+| `index.html` 的 `.resize-frame` | 四边（5px）+ 四角（14px）隐形热区，铺满窗口但容器 `pointer-events:none`，只有细条吃事件 |
+| `src/main.js` 的 `initWindowChrome()` | 把按钮接到 `minimize / toggleMaximize / close`，热区接到 `startResizeDragging`；用 `onResized` 同步最大化状态 |
+
+几个要点：
+
+- **`is-maximized` 挂在 `<html>` 上**：最大化时把最大/还原两个图标对调（两个 `<svg>` 用 CSS
+  切显隐），并把 `.resize-frame` 整体收起来（最大化后本来就拖不动四边）。
+- **权限**：`core:window:allow-start-resize-dragging` 必须留在 `capabilities/default.json` 里
+  （`start-dragging` / `minimize` / `toggle-maximize` / `close` 早就在）。注意 capability 文件是
+  **严格 JSON**，写了 `//` 注释整个构建会以 `failed to parse JSON` 失败。
+- **想回到系统标题栏**：把 `tauri.conf.json` 的 `decorations` 改回 `true` 即可——`initWindowChrome()`
+  读到 `isDecorated() === true` 会给 `<html>` 挂 `.native-chrome`，自绘标题栏与热区一起让位、
+  `#app` 恢复 14px 上内边距。**别只删 HTML**：那样窗口会既没有系统标题栏也没有自绘那条，
+  拖不动也关不掉。
+- **Windows 上的取舍**：无边框窗口靠 tauri 的 `shadow: true`（默认）拿回投影、Win11 圆角与最外圈
+  的系统缩放边框；失去的是 **Win11 贴靠布局**（悬停最大化按钮弹的那套），Win+方向键不受影响。
+- **还不是窗口真身的验证**：`npm run ui` + `http://localhost:1420/?mock=1` 就能看标题栏排版
+  （mock 里 `is_decorated` 照实答 `false`，最大化按钮可点，会真的切图标与热区）。
+  真机上「拖得动、缩放正常」仍需在桌面会话里手验。
 
 ### 宠物窗口是第二个 WebView
 
@@ -679,9 +717,11 @@ python tools/preview_pet_frames.py         # 人眼验收：出 shots/pet_frames
 
 ### 前端预览与 Mock
 
-宠物页面可以脱离真机配置直接预览（`npm run ui` 后打开）：
+主面板、宠物、任务栏挂件都能脱离真机预览（`npm run ui` 后打开）：
 
 ```text
+http://localhost:1420/?mock=1                               # 主面板（含自绘标题栏；最大化按钮可点）
+http://localhost:1420/?mock=1&pawnio=missing&lenovo=1       # 未装 PawnIO、联想机型待启用
 http://localhost:1420/pet.html?mock=1                      # 常规档
 http://localhost:1420/pet.html?mock=1&hot=1                # 过热档
 http://localhost:1420/pet.html?mock=1&temp=74              # 固定温度逐档核对（取值 38/50/63/74/84/94）
@@ -794,6 +834,9 @@ http://localhost:1420/taskbar.html?mock=1&vertical=1         # 任务栏竖排�
 - 部分老平台 / 虚拟机没有 RAPL 能量计数器，CPU 封装功耗显示 `--`；
 - Windows 不公开适配器输出功率，「电源功率」只能给电池侧功率 + CPU 封装功耗；
 - 桌面宠物目前是固定一套机器人狐狸素材，暂不支持自定义形象；
+- **窗口用的是自绘标题栏**（三平台一致，见[自绘标题栏与窗口缩放](#自绘标题栏与窗口缩放)），
+  代价是 Windows 11 的**贴靠布局**（悬停最大化按钮弹出的那套分屏菜单）不再出现——
+  `Win` + 方向键的分屏不受影响；最大化 / 最小化 / 关闭 / 边缘拖拽缩放都正常；
 - **任务栏挂件只贴主显示器的任务栏**（`Shell_TrayWnd` 就在主显示器上）：
   开了「在所有显示器上显示任务栏」时，副屏那几条任务栏上不会出现挂件；
 - 挂件的位置去 **通知区域左侧**，不占任务栏按钮区：勾了特别多指标（或屏幕很窄）时

@@ -19,6 +19,8 @@
   --danger: #ff5f6d;
   --radius: 16px;
   --gap: 14px;
+  /* #app 的左右内边距：自绘标题栏要靠它算负外边距，横跨整个窗口顶边 */
+  --pad-x: 16px;
   color-scheme: dark;
 }
 
@@ -51,7 +53,192 @@ body {
   /* 固定占满窗口高度，超出部分交给下方 .grid 的内部滚动条，避免内容被裁切 */
   height: 100vh;
   overflow: hidden;
-  padding: 14px 16px 0;
+  /* 上边不留白：第一行是自绘标题栏，它自己顶到窗口最上沿（见下） */
+  padding: 0 var(--pad-x) 0;
+}
+
+/* ---------------- 自绘标题栏 ----------------
+ * 主窗口无原生装饰条（tauri.conf.json 的 decorations: false），标题栏与四边缩放热区
+ * 都由页面自己提供 —— 这条路径是三平台默认形态。
+ * 万一哪天把 decorations 改回 true，main.js 会给 <html> 挂 .native-chrome，
+ * 下面这组就整体让位给系统标题栏（不会被系统那条叠两层）。 */
+
+/* 标题栏顶到窗口最上沿，替掉 #app 原来那 14px 上内边距；
+   左右用负外边距抵消 #app 的内边距，让整条（含边角）都能拖，和原生标题栏手感一致。 */
+.titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: 0 0 auto;
+  height: 34px;
+  margin: 0 calc(-1 * var(--pad-x)) 10px;
+  padding: 0 4px 0 var(--pad-x);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.native-chrome #app {
+  padding-top: 14px;
+}
+
+.native-chrome .titlebar {
+  display: none;
+}
+
+/* 品牌标记：与顶栏那个 .logo 同源的双色渐变，但只留一个符号，不跟下面的品牌区抢戏 */
+.titlebar-mark {
+  font-size: 13px;
+  line-height: 1;
+  background: linear-gradient(135deg, var(--cpu), var(--bat));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.titlebar-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.win-btn {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  width: 30px;
+  height: 26px;
+  padding: 0;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.win-btn svg {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.win-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text);
+}
+
+.win-btn:active {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.win-btn--close:hover {
+  background: rgba(255, 95, 109, 0.85);
+  color: #fff;
+}
+
+/* 最大化 / 还原两个图标共用一颗按钮，按窗口状态切换（is-maximized 由 main.js 同步） */
+.win-btn .ic-restore {
+  display: none;
+}
+
+.is-maximized .win-btn .ic-max {
+  display: none;
+}
+
+.is-maximized .win-btn .ic-restore {
+  display: block;
+}
+
+/* 四边 / 四角缩放热区：系统边框没了，缩放得页面自己提供。
+   容器铺满窗口但 pointer-events:none，只有下面那几根细条吃事件，
+   免得压在卡片与滚动条上抢点击。 */
+.resize-frame {
+  display: block;
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  pointer-events: none;
+}
+
+.native-chrome .resize-frame {
+  display: none;
+}
+
+.resize-frame i {
+  position: absolute;
+  pointer-events: auto;
+}
+
+.resize-frame i[data-dir="North"],
+.resize-frame i[data-dir="South"] {
+  left: 12px;
+  right: 12px;
+  height: 5px;
+  cursor: ns-resize;
+}
+
+.resize-frame i[data-dir="North"] {
+  top: 0;
+}
+
+.resize-frame i[data-dir="South"] {
+  bottom: 0;
+}
+
+.resize-frame i[data-dir="West"],
+.resize-frame i[data-dir="East"] {
+  top: 12px;
+  bottom: 12px;
+  width: 5px;
+  cursor: ew-resize;
+}
+
+.resize-frame i[data-dir="West"] {
+  left: 0;
+}
+
+.resize-frame i[data-dir="East"] {
+  right: 0;
+}
+
+.resize-frame i[data-dir="NorthWest"],
+.resize-frame i[data-dir="NorthEast"],
+.resize-frame i[data-dir="SouthWest"],
+.resize-frame i[data-dir="SouthEast"] {
+  width: 14px;
+  height: 14px;
+}
+
+.resize-frame i[data-dir="NorthWest"] {
+  top: 0;
+  left: 0;
+  cursor: nwse-resize;
+}
+
+.resize-frame i[data-dir="NorthEast"] {
+  top: 0;
+  right: 0;
+  cursor: nesw-resize;
+}
+
+.resize-frame i[data-dir="SouthWest"] {
+  bottom: 0;
+  left: 0;
+  cursor: nesw-resize;
+}
+
+.resize-frame i[data-dir="SouthEast"] {
+  bottom: 0;
+  right: 0;
+  cursor: nwse-resize;
+}
+
+/* 最大化之后四边不再可拖（窗口管理器也不认这个请求），整组收起来 */
+.is-maximized .resize-frame {
+  display: none;
 }
 
 /* ---------------- topbar ---------------- */

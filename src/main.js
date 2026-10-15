@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   esc,
   fmtBytes,
@@ -1153,8 +1154,60 @@ onTipClick("tip-unmute", () => {
   switchView(saved === "settings" ? "settings" : "monitor");
 })();
 
+/* ---------------- 自绘窗口外壳：标题栏与四边缩放 ----------------
+
+ * 主窗口是无装饰条窗口（tauri.conf.json 的 decorations: false），最小化 / 最大化 /
+ * 关闭 / 四边缩放都得页面代劳（拖动与双击最大化由 Tauri 的 drag.js 管标题栏那条）。
+ * 布局默认就按「有这条自绘标题栏」排（见 style.css），不等任何 IPC —— 等一轮再切会
+ * 先按系统标题栏排一版、拿到答复再往上跳一格。
+ * 这里只做两件事：接线，以及**兜底**——万一窗口其实带着原生装饰条
+ * （谁把 decorations 改回了 true），就挂上 .native-chrome 把自绘那条收起来，
+ * 免得两条标题栏叠在一起。 */
+async function initWindowChrome() {
+  let win;
+  try {
+    win = getCurrentWindow();
+    document.documentElement.classList.toggle("native-chrome", await win.isDecorated());
+  } catch (e) {
+    // 浏览器 mock 预览（npm run ui）里窗口 API 可能缺席：排版照旧，只是按钮是摆设
+    console.warn("窗口外壳：读不到窗口装饰状态，按自绘外壳处理：", e);
+    return;
+  }
+  if (document.documentElement.classList.contains("native-chrome")) return;
+
+  // 最大化状态：按钮图标要在「最大化 / 还原」之间切，四边缩放热区也要跟着收起来。
+  // 拖动边框、双击标题栏、窗口管理器快捷键都会触发 resize 事件，统一在那里同步。
+  const syncMaximized = () => {
+    win.isMaximized()
+      .then((maximized) => document.documentElement.classList.toggle("is-maximized", maximized))
+      .catch((e) => console.error("读取最大化状态失败:", e));
+  };
+  const bind = (id, action) => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.addEventListener("click", () => action().catch((e) => console.error(`${id} 失败:`, e)));
+    }
+  };
+
+  bind("win-min", () => win.minimize());
+  bind("win-max", () => win.toggleMaximize());
+  // 关闭走窗口的默认流程：设置里开着「关闭时最小化到托盘」就隐藏，否则真退出
+  bind("win-close", () => win.close());
+
+  document.getElementById("resize-frame")?.addEventListener("mousedown", (e) => {
+    const dir = e.target?.dataset?.dir;
+    if (!dir || e.button !== 0) return;
+    e.preventDefault();
+    win.startResizeDragging(dir).catch((err) => console.error("调整窗口尺寸失败:", err));
+  });
+
+  win.onResized(syncMaximized).catch((e) => console.error("监听窗口尺寸失败:", e));
+  syncMaximized();
+}
+
 /* 启动：设置异步加载，同时先渲染首屏再开启轮询
  * （不用 top-level await，保持构建目标兼容） */
+initWindowChrome();
 initSettings();
 initPetSettings();
 initTaskbarSettings();

@@ -20,8 +20,18 @@
   const hot = params.get("hot") === "1";
   const noGpu = params.get("nogpu") === "1";
   const fixedTemp = params.has("temp") ? Number(params.get("temp")) : null;
+  // 窗口外壳：真实主窗口是无装饰条窗口（自绘标题栏），最大化状态由这颗开关模拟，
+  // 便于在预览里核对「最大化 → 图标变还原、四边热区收起」这一套
+  let maximized = false;
+  // 当前页面是哪个窗口：真实环境由 Tauri 注入，getCurrentWindow() 要读它
+  const windowLabel = location.pathname.includes("pet")
+    ? "pet"
+    : location.pathname.includes("taskbar")
+      ? "taskbar"
+      : "main";
 
   let tick = 0;
+  let callbackId = 0;
   const jitter = (base, amp) => Math.max(0, base + (Math.random() - 0.5) * amp);
   const rnd = (base, amp) => Math.round(jitter(base, amp));
 
@@ -237,8 +247,26 @@
   let fanPrefCpuId = null;
 
   window.__TAURI_INTERNALS__ = {
+    // 窗口 API（getCurrentWindow）从这里读当前窗口 label
+    metadata: {
+      currentWindow: { label: windowLabel },
+      currentWebview: { label: windowLabel, windowLabel },
+    },
+    // 事件 API（listen / onResized）注册回调时要先拿个 id；预览里没有事件通道，
+    // 给个自增 id 让调用方能正常返回即可（不会有事件真被投递）
+    transformCallback: () => ++callbackId,
     invoke(cmd, args) {
       switch (cmd) {
+        // 窗口外壳：主窗口无装饰条（标题栏是页面自绘的），预览里照实回答
+        case "plugin:window|is_decorated":
+          return Promise.resolve(false);
+        case "plugin:window|is_maximized":
+          return Promise.resolve(maximized);
+        case "plugin:window|toggle_maximize":
+          maximized = !maximized;
+          // 预览里没有事件通道（真实窗口靠 resize 事件驱动页面），直接同步一下 class
+          document.documentElement.classList.toggle("is-maximized", maximized);
+          return Promise.resolve(null);
         case "get_snapshot":
           return Promise.resolve(snapshot());
         case "get_runtime_config":

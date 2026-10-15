@@ -582,6 +582,8 @@ pub fn run_bridge_if_requested() -> bool {
     false
 }
 
+/* ---------------- 窗口外壳：主窗口的标题栏 ---------------- */
+
 pub fn run() {
     install_crash_logger();
     // 采样器独立于 UI 运行，多个窗口 / 前端刷新共用同一份数据
@@ -660,6 +662,8 @@ pub fn run() {
         fan_pref,
     };
 
+    // 窗口外壳：主窗口无原生装饰条（tauri.conf.json 的 decorations: false），
+    // 标题栏 / 拖动 / 四边缩放由页面自绘，见 index.html 的 .titlebar 与 src/main.js
     tauri::Builder::default()
         // 单实例闸门必须**第一个**注册（插件文档要求）：第二次启动时新进程会立刻退出，
         // 这里只负责把已有实例的主窗口拉到前台。

@@ -8,6 +8,37 @@
   </head>
   <body>
     <div id="app">
+      <!-- 自绘标题栏：主窗口是无装饰条窗口（tauri.conf.json 的 decorations: false），
+           标题栏、拖动、四边缩放都由页面自己提供（拖动的接线在 src/main.js）。
+           整条可拖（data-tauri-drag-region="deep"），双击切最大化；按钮是 clickable
+           元素，Tauri 的 drag.js 会自动把它们从拖动区里摘出去。
+           若哪天把 decorations 改回 true，main.js 会给 <html> 挂上 .native-chrome，
+           这条连同缩放热区一起收起，退回系统标题栏 —— 不会被系统那条叠两层。 -->
+      <header class="titlebar" data-tauri-drag-region="deep">
+        <span class="titlebar-mark" aria-hidden="true">◈</span>
+        <div class="titlebar-actions">
+          <button type="button" class="win-btn" id="win-min" title="最小化" aria-label="最小化">
+            <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 6h7" /></svg>
+          </button>
+          <button type="button" class="win-btn" id="win-max" title="最大化" aria-label="最大化">
+            <svg viewBox="0 0 12 12" aria-hidden="true">
+              <rect class="ic-max" x="2.5" y="2.5" width="7" height="7" rx="1.5" />
+              <path class="ic-restore" d="M4.5 4.5h-1a1 1 0 0 0-1 1v4a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1v-1" />
+              <path class="ic-restore" d="M6 2.5h3.5v3.5" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            class="win-btn win-btn--close"
+            id="win-close"
+            title="关闭"
+            aria-label="关闭"
+          >
+            <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3 3l6 6M9 3l-6 6" /></svg>
+          </button>
+        </div>
+      </header>
+
       <header class="topbar">
         <div class="brand">
           <div class="logo">◈</div>
@@ -512,6 +543,20 @@
         <span id="status-left">就绪</span>
         <span id="status-right">数据来源：sysinfo + Win32 (CallNtPowerInformation / GlobalMemoryStatusEx)</span>
       </footer>
+
+      <!-- 无边框窗口的四边 / 四角缩放热区：系统标题栏与系统边框都没了，缩放得页面自己提供
+           （位置由 JS 接到 startResizeDragging 上，见 main.js 的 initWindowChrome；
+           Windows 上系统还会在窗口最外圈留一圈 DWM 边框可拖，两边不冲突）。 -->
+      <div class="resize-frame" id="resize-frame" aria-hidden="true">
+        <i data-dir="North"></i>
+        <i data-dir="South"></i>
+        <i data-dir="West"></i>
+        <i data-dir="East"></i>
+        <i data-dir="NorthWest"></i>
+        <i data-dir="NorthEast"></i>
+        <i data-dir="SouthWest"></i>
+        <i data-dir="SouthEast"></i>
+      </div>
     </div>
 
     <!-- 开发预览替身：仅在 URL 带 ?mock=1 时生效，Tauri 环境下不会加载 -->
