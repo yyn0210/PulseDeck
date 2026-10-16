@@ -5,8 +5,8 @@
 //! 包成源对象。Windows 构建的行为与抽象化之前完全一致。
 
 use super::{
-    BatterySource, FanReport, FanSource, GpuSource, MemoryExtras, MemoryStatus,
-    PlatformSources, ThermalSource,
+    BatterySource, CpuExtras, CpuExtrasReading, FanReport, FanSource, GpuSource, MemoryExtras,
+    MemoryStatus, PlatformSources, ThermalSource,
 };
 use crate::battery;
 use crate::fan_pref::FanPrefStore;
@@ -55,6 +55,13 @@ impl MemoryExtras for WinMemoryExtras {
     }
 }
 
+impl CpuExtras for crate::cpu_extras::CpuExtrasProbe {
+    fn sample(&mut self) -> CpuExtrasReading {
+        // 转发到同名固有方法（路径解析优先固有方法，不会递归回 trait 实现）
+        crate::cpu_extras::CpuExtrasProbe::sample(self)
+    }
+}
+
 pub(super) fn sources() -> PlatformSources {
     PlatformSources {
         gpu: Box::new(crate::gpu::GpuProbe::new()),
@@ -62,5 +69,6 @@ pub(super) fn sources() -> PlatformSources {
         fan: Box::new(crate::fan::FanProbe::new()),
         battery: Box::new(WinBattery),
         memory_extras: Box::new(WinMemoryExtras),
+        cpu_extras: Box::new(crate::cpu_extras::CpuExtrasProbe::new()),
     }
 }

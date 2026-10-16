@@ -4,8 +4,8 @@
 //!
 //! * **天然可移植的一半**（CPU / 内存基础 / 磁盘 / 网络 / 进程榜）直接走 sysinfo，
 //!   留在 `sampler.rs`，不进本层——抽象 OS 绑定不了已经可移植的东西。
-//! * **OS 绑定的一半**（GPU / 温度 / 风扇 / 电池 / 内存附加指标）没有跨平台库兜底，
-//!   全部收敛为本模块的 5 个 trait，由各平台的子模块给出实现：
+//! * **OS 绑定的一半**（GPU / 温度 / 风扇 / 电池 / 内存附加 / CPU 附加指标）没有跨平台库
+//!   兜底，全部收敛为本模块的 6 个 trait，由各平台的子模块给出实现：
 //!
 //! | trait | Windows 实现（`windows.rs`） | Linux 实现（`linux.rs`） | 其他平台（`unsupported.rs`） |
 //! | --- | --- | --- | --- |
@@ -14,10 +14,11 @@
 //! | [`FanSource`] | 厂商私有 / LHM / ACPI 三级降级（`fan.rs`） | hwmon fan/pwm | 同上 |
 //! | [`BatterySource`] | CallNtPowerInformation / GetSystemPowerStatus（`win32.rs`） | `/sys/class/power_supply` | 同上 |
 //! | [`MemoryExtras`] | GlobalMemoryStatusEx 提交量（`win32.rs`） | `/proc/meminfo` 提交量 | 同上 |
+//! | [`CpuExtras`] | PDH `Actual Frequency`（实时主频，`cpu_extras.rs`） | 无需补充（sysinfo 已是实时口径） | 同上 |
 //!
 //! ## 接入新平台的步骤
 //!
-//! 1. 新建 `platform/<os>.rs`，为 5 个 trait 各写一个实现（能读到就报、读不到
+//! 1. 新建 `platform/<os>.rs`，为 6 个 trait 各写一个实现（能读到就报、读不到
 //!    给出该平台的具体原因，遵循「数据源诚实降级」）；
 //! 2. 在 [`sources`] 的 cfg 分派里加一个分支；
 //! 3. `unsupported.rs` 对新平台不再生效，其余公共层（sampler / battery / model）
@@ -106,6 +107,24 @@ pub struct MemoryStatus {
     pub commit_used_bytes: u64,
 }
 
+/// CPU 的附加读数：sysinfo 覆盖不到的一项（**实时**主频）。
+///
+/// 为什么单独一路：Windows 上 sysinfo 的 `Cpu::frequency()` 取自
+/// `CallNtPowerInformation` 的 `PROCESSOR_POWER_INFORMATION.CurrentMhz`，实测**恒为
+/// 标称频率**（本机 2300 MHz，打满也不动），实时值只能从 PDH `Actual Frequency` 拿。
+/// 占用不在这里补充——实测任务管理器显示的与 sysinfo 的忙时占比**同口径**
+/// （`% Processor Utility` 恒为「忙时 × 频率系数」，与任务管理器对不上，
+/// 见 `cpu_extras.rs` 模块文档与 AGENTS.md），所以占用没有第二条通道。
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CpuExtrasReading {
+    /// 平台自己给的**实时**主频（MHz）。给出时优先于 sysinfo 的 `frequency()`
+    pub live_freq_mhz: Option<u32>,
+    /// sysinfo 的 `frequency()` 在本平台**是否已经是实时值**：
+    /// Windows 只给标称频率（false），Linux 读的是 cpufreq `scaling_cur_freq`（true）。
+    /// 界面据此决定写「当前主频」还是「基准主频」——不能拿标称值冒充实时值。
+    pub sysinfo_freq_live: bool,
+}
+
 /// 电池原始读数（自 `win32.rs` 迁入）。
 /// 各平台的 [`BatterySource`] 把原生接口的读数整理成这个统一形状，
 /// 再交给公共层 `battery::from_raw` 做加工（文案、单位换算全部复用）。
@@ -157,6 +176,12 @@ pub trait MemoryExtras: Send {
     fn memory_status(&self) -> Option<MemoryStatus>;
 }
 
+/// sysinfo 覆盖不到的 CPU 附加指标（**实时**主频）。
+/// 平台没有对应通道时各项给 `None` + `sysinfo_freq_live` 如实回答，前端相应降级。
+pub trait CpuExtras: Send {
+    fn sample(&mut self) -> CpuExtrasReading;
+}
+
 /* ---------------- 平台工厂 ---------------- */
 
 /// 一套平台采集源。由 [`sources`] 按编译目标组装，sampler 整体持有。
@@ -166,6 +191,7 @@ pub struct PlatformSources {
     pub fan: Box<dyn FanSource>,
     pub battery: Box<dyn BatterySource>,
     pub memory_extras: Box<dyn MemoryExtras>,
+    pub cpu_extras: Box<dyn CpuExtras>,
 }
 
 /// 组装当前操作系统的采集源。
@@ -239,5 +265,15 @@ mod tests {
         assert!(!battery.status_text.is_empty(), "电池应给出说明而非空文案");
 
         assert!(s.memory_extras.memory_status().is_none());
+
+        let cpu_extras = s.cpu_extras.sample();
+        assert!(
+            cpu_extras.live_freq_mhz.is_none(),
+            "占位实现不应编造实时主频"
+        );
+        assert!(
+            !cpu_extras.sysinfo_freq_live,
+            "占位平台不得把 sysinfo 的主频当实时值宣称"
+        );
     }
 }

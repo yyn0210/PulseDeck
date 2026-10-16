@@ -47,8 +47,11 @@ pub struct CpuInfo {
     pub physical_cores: usize,
     /// 当前各核心占用（%），顺序与 sysinfo 的 cpus() 一致
     pub per_core: Vec<f32>,
-    /// 当前最高主频（MHz）
+    /// 当前主频（MHz）：平台能读到实时值就给实时值（Windows 走 PDH 的
+    /// `Actual Frequency`），否则退回 sysinfo 的标称频率（此时 `freq_live = false`）
     pub freq_mhz: u64,
+    /// `freq_mhz` 是否为**实时**读数。false = 平台只能给标称频率，界面写「基准主频」
+    pub freq_live: bool,
     /// CPU 风扇转速（RPM）。Windows 无公开通道，仅装 OHM/旧版 LHM 时才有值。
     pub fan_rpm: Option<f32>,
     /// CPU 风扇占空比（%）。ACPI 的「相对速度」归到这里（单位不可信为 RPM）。

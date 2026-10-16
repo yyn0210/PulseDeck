@@ -22,7 +22,7 @@ const TEMPLATE = `
   <ul class="kv">
     <li><span>型号</span><b id="cpu-brand">--</b></li>
     <li><span>核心 / 线程</span><b id="cpu-cores">--</b></li>
-    <li><span>当前主频</span><b id="cpu-freq">--</b></li>
+    <li><span id="cpu-freq-label">当前主频</span><b id="cpu-freq">--</b></li>
     <li><span>温度</span><b id="cpu-temp">--</b></li>
     <li><span>风扇</span><b id="cpu-fan">--</b></li>
   </ul>
@@ -50,6 +50,8 @@ export default {
         set("#cpu-brand", cpu.brand);
         set("#cpu-cores", `${cpu.physicalCores} 核 / ${cpu.logicalCores} 线程`);
         set("#cpu-freq", fmtFreq(cpu.freqMhz));
+        // 标签跟着数据口径走：能读到实时主频才敢写「当前」，否则如实写「基准主频」
+        set("#cpu-freq-label", cpu.freqLive ? "当前主频" : "基准主频");
         set("#cpu-fan", fmtFan(cpu.fanRpm, cpu.fanPct));
         setFanSource(root, "#cpu-fan", cpu.fanSource);
         set("#cpu-tag", `峰值 ${Math.max(...cpu.perCore, 0).toFixed(0)}%`);

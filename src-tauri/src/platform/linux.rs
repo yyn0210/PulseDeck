@@ -11,6 +11,7 @@
 //! | [`FanSource`] | hwmon `fanN_input`（RPM）/ `pwmN`（占空比）|
 //! | [`BatterySource`] | `/sys/class/power_supply/`（charge / energy 两种量纲）|
 //! | [`MemoryExtras`] | `/proc/meminfo`（MemAvailable + Committed_AS / CommitLimit）|
+//! | [`CpuExtras`] | 无需额外通道：sysinfo 的占用本身就是忙时占比、主频也读实时值 |
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -23,8 +24,8 @@ use super::linux_parse::{
     BatteryRaw, DrmCardRaw, EnergyCounter, FanPick, HwmonChip,
 };
 use super::{
-    BatterySource, FanReading, FanReport, FanSource, GpuSource, MemoryExtras, MemoryStatus,
-    PlatformSources, RawBattery, ThermalSource,
+    BatterySource, CpuExtras, CpuExtrasReading, FanReading, FanReport, FanSource, GpuSource,
+    MemoryExtras, MemoryStatus, PlatformSources, RawBattery, ThermalSource,
 };
 use crate::battery;
 use crate::fan_pref::FanPrefStore;
@@ -531,6 +532,23 @@ impl MemoryExtras for LinuxMemoryExtras {
     }
 }
 
+/* ------------------------------ CPU 附加 ------------------------------ */
+
+/// Linux 不需要额外的 CPU 通道：sysinfo 的占用读 `/proc/stat`（本就是「忙时占比」，
+/// 与 Windows 任务管理器同口径），主频读 cpufreq `scaling_cur_freq`（实时值，
+/// cpufreq 不可用时退回 `/proc/cpuinfo` 的 `cpu MHz`，同样是当前值）——
+/// 两项都是现成的，这里如实报「无需补充」。
+struct LinuxCpuExtras;
+
+impl CpuExtras for LinuxCpuExtras {
+    fn sample(&mut self) -> CpuExtrasReading {
+        CpuExtrasReading {
+            live_freq_mhz: None,
+            sysinfo_freq_live: true,
+        }
+    }
+}
+
 /* ------------------------------ 工厂 ------------------------------ */
 
 pub(super) fn sources() -> PlatformSources {
@@ -543,5 +561,6 @@ pub(super) fn sources() -> PlatformSources {
         fan: Box::new(LinuxFan { pref: None }),
         battery: Box::new(LinuxBattery),
         memory_extras: Box::new(LinuxMemoryExtras),
+        cpu_extras: Box::new(LinuxCpuExtras),
     }
 }

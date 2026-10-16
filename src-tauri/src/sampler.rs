@@ -9,7 +9,7 @@ use crate::model::{
     percent_of, BatteryInfo, CpuInfo, DiskInfo, GpuInfo, MemoryInfo, NetIface, NetInfo, ProcInfo,
     Snapshot, SystemInfo, ThermalInfo,
 };
-use crate::platform::{self, FanReport, GpuSource, MemoryExtras};
+use crate::platform::{self, CpuExtrasReading, FanReport, GpuSource, MemoryExtras};
 
 /// 进程榜单长度
 const TOP_N: usize = 8;
@@ -153,6 +153,9 @@ impl Sampler {
         stage!("net.refresh", net.refresh(true));
 
         let mut cpu = stage!("collect_cpu", collect_cpu(sys));
+        // **实时**主频。Windows 要另外读（PDH `Actual Frequency`：sysinfo 只给标称频率）；
+        // Linux 的 sysinfo 本来就是实时值、未适配平台如实报「没有」，都走同一个 trait。
+        let cpu_extras = stage!("cpu_extras", sources.cpu_extras.sample());
         let memory = stage!("memory_extras", collect_memory(sys, &*sources.memory_extras));
         let disks_out = stage!("collect_disks", collect_disks(disks, elapsed_secs));
         let battery_info: BatteryInfo = stage!("battery", sources.battery.collect());
@@ -168,6 +171,7 @@ impl Sampler {
         // 注意风扇读数与温度是两套独立通道，不能因为温度有值就假定风扇也有。
         let fans = stage!("fan", sources.fan.sample(gpu_out.devices.len()));
         apply_cpu_fan(&mut cpu, &fans);
+        apply_cpu_extras(&mut cpu, &cpu_extras);
         apply_gpu_fan(&mut gpu_out, &fans);
 
         let snap = Snapshot {
@@ -252,6 +256,8 @@ fn collect_cpu(sys: &System) -> CpuInfo {
         physical_cores: System::physical_core_count().unwrap_or(cpus.len()),
         per_core,
         freq_mhz,
+        // 主频的「实时与否」由 apply_cpu_extras 在采样后期按平台通道补齐
+        freq_live: false,
         // 风扇由 fan.rs 在采样后期补齐（WMI 查询慢、且独立于 CPU 采集）
         fan_rpm: None,
         fan_pct: None,
@@ -268,6 +274,21 @@ fn apply_cpu_fan(cpu: &mut CpuInfo, fans: &FanReport) {
     cpu.fan_rpm = fans.cpu.rpm;
     cpu.fan_pct = fans.cpu.pct;
     cpu.fan_source = fans.cpu.source.clone();
+}
+
+/// 把平台侧的 CPU 附加读数写进 `CpuInfo`（**实时**主频）
+///
+/// 取舍：平台能给实时值就用实时值（Windows 走 PDH `Actual Frequency`，与任务管理器的
+/// 「速度」同量级）；给不出来时保留 sysinfo 的值，但**如实标注它不是实时读数**
+/// （Windows 的 sysinfo 主频是恒定标称值），界面据此写「基准主频」。
+fn apply_cpu_extras(cpu: &mut CpuInfo, extras: &CpuExtrasReading) {
+    match extras.live_freq_mhz {
+        Some(mhz) => {
+            cpu.freq_mhz = mhz as u64;
+            cpu.freq_live = true;
+        }
+        None => cpu.freq_live = extras.sysinfo_freq_live,
+    }
 }
 
 /// 把风扇报告里的 GPU 部分写进 `GpuInfo` 与各设备（仅在原生通道没给值时才覆盖）
@@ -477,4 +498,52 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 造一个「只有 sysinfo 给的标称主频」的 CpuInfo（Windows 上 sysinfo 就是给这个）
+    fn cpu_with_sysinfo_freq() -> CpuInfo {
+        CpuInfo {
+            freq_mhz: 2300,
+            ..CpuInfo::default()
+        }
+    }
+
+    #[test]
+    fn cpu_extras_prefers_live_frequency_and_flags_it() {
+        let mut cpu = cpu_with_sysinfo_freq();
+        apply_cpu_extras(
+            &mut cpu,
+            &CpuExtrasReading {
+                live_freq_mhz: Some(3416),
+                sysinfo_freq_live: false,
+            },
+        );
+        assert_eq!(cpu.freq_mhz, 3416, "平台给了实时主频就用它");
+        assert!(cpu.freq_live, "实时值要如实标记，界面才敢写「当前主频」");
+    }
+
+    #[test]
+    fn cpu_extras_without_live_channel_degrades_honestly() {
+        // Windows 上 PDH 拿不到：保留 sysinfo 的标称频率，但不得宣称它是实时值
+        let mut cpu = cpu_with_sysinfo_freq();
+        apply_cpu_extras(&mut cpu, &CpuExtrasReading::default());
+        assert_eq!(cpu.freq_mhz, 2300);
+        assert!(!cpu.freq_live, "标称频率不能被当成实时主频");
+
+        // Linux：sysinfo 的主频本来就是实时值（cpufreq），原样保留并标记
+        let mut cpu = cpu_with_sysinfo_freq();
+        apply_cpu_extras(
+            &mut cpu,
+            &CpuExtrasReading {
+                sysinfo_freq_live: true,
+                ..CpuExtrasReading::default()
+            },
+        );
+        assert_eq!(cpu.freq_mhz, 2300);
+        assert!(cpu.freq_live);
+    }
 }

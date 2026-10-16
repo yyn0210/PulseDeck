@@ -9,8 +9,8 @@
 //! 不再走到这里。
 
 use super::{
-    BatterySource, FanReading, FanReport, FanSource, GpuSource, MemoryExtras, MemoryStatus,
-    PlatformSources, ThermalSource, UNSUPPORTED,
+    BatterySource, CpuExtras, CpuExtrasReading, FanReading, FanReport, FanSource, GpuSource,
+    MemoryExtras, MemoryStatus, PlatformSources, ThermalSource, UNSUPPORTED,
 };
 use crate::fan_pref::FanPrefStore;
 use crate::model::{BatteryInfo, GpuDevice, ThermalInfo};
@@ -74,6 +74,15 @@ impl MemoryExtras for UnsupportedMemoryExtras {
     }
 }
 
+struct UnsupportedCpuExtras;
+
+impl CpuExtras for UnsupportedCpuExtras {
+    fn sample(&mut self) -> CpuExtrasReading {
+        // 这一档不补充任何附加读数；sysinfo 的主频也不当作实时值
+        CpuExtrasReading::default()
+    }
+}
+
 pub(super) fn sources() -> PlatformSources {
     PlatformSources {
         gpu: Box::new(UnsupportedGpu),
@@ -81,5 +90,6 @@ pub(super) fn sources() -> PlatformSources {
         fan: Box::new(UnsupportedFan),
         battery: Box::new(UnsupportedBattery),
         memory_extras: Box::new(UnsupportedMemoryExtras),
+        cpu_extras: Box::new(UnsupportedCpuExtras),
     }
 }

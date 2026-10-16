@@ -13,7 +13,7 @@ use std::time::Duration;
  * ⚠️ 公共层不得直接 use 下面的 Windows 模块，OS 绑定的读取一律走 platform
  * 的 trait（见 platform/mod.rs 的「硬性约束」）——这是 cfg 分区能成立的边界。
  *
- * Windows 专属：采样通道的具体实现（gpu/thermal/fan/vendor/win32/wmi/pdh）、
+ * Windows 专属：采样通道的具体实现（gpu/thermal/fan/vendor/win32/wmi/pdh/cpu_extras）、
  * PawnIO 提权链（pawnio/pawnio_setup/msr_bridge）。
  */
 
@@ -33,6 +33,9 @@ mod win32;
 mod wmi;
 #[cfg(windows)]
 mod pdh;
+/// CPU 的**实时**主频（PDH `Processor Information\Actual Frequency`）
+#[cfg(windows)]
+mod cpu_extras;
 #[cfg(windows)]
 mod pawnio;
 #[cfg(windows)]
@@ -824,6 +827,7 @@ pub fn run() {
  * 新增指标或某台机器读不到数据时，先跑这些用例逐层确认：
  *   cargo test diag_probe_gpu -- --nocapture      # NVML / PDH GPU
  *   cargo test diag_probe_thermal -- --nocapture  # 温度（含 WMI 硬件监控）
+ *   cargo test diag_cpu_extras -- --nocapture     # 实时主频（PDH Actual Frequency，附标称频率对照）
  *   cargo test diag_wmi -- --nocapture            # WMI 连通性（可加 WB_WMI_DIAG=1 看逐步 HRESULT）
  */
 
@@ -1307,6 +1311,67 @@ mod diag {
         }
         if let Some(c) = em {
             println!("energy meter = {:?}", q.double_array(c));
+        }
+    }
+
+    /// CPU 实时主频（`Actual Frequency`）：确认它能读出实时值，并打出标称频率做对照
+    ///
+    /// 用法：`cargo test --lib diag::cpu_extras -- --nocapture`
+    ///
+    /// 两个对照量：`Processor Frequency` 是标称频率（与 sysinfo 报的同一路，实测恒定不动），
+    /// `% Processor Performance` 是实时频率相对标称的百分比（能解释任务管理器的「速度」
+    /// 为什么会超过「基准速度」）。注意**「利用率」不在这一路**：任务管理器显示的是忙时占比
+    /// （与本工具总占用同口径），`% Processor Utility` 实测与它对不上，见 AGENTS.md
+    /// 「Windows 上的已知坑」与 `cpu_extras.rs` 的模块文档。
+    #[test]
+    fn cpu_extras() {
+        flush("probe");
+        let mut probe = super::cpu_extras::CpuExtrasProbe::new();
+        println!("reading[0] = {:?}", probe.sample());
+        std::thread::sleep(std::time::Duration::from_millis(1000));
+        println!("reading[1] = {:?}", probe.sample());
+
+        flush("sysinfo");
+        let mut sys = sysinfo::System::new();
+        sys.refresh_cpu_all();
+        println!(
+            "sysinfo 主频 = {:?} MHz（标称；实时值不会动，实时主频看 Actual Frequency）",
+            sys.cpus().iter().map(|c| c.frequency()).max()
+        );
+
+        flush("raw");
+        let Some(q) = super::pdh::Query::new() else {
+            println!("PDH 查询创建失败");
+            return;
+        };
+        let counters = [
+            (
+                "Actual Frequency",
+                q.add(r"\Processor Information(*)\Actual Frequency"),
+            ),
+            (
+                "Processor Frequency",
+                q.add(r"\Processor Information(*)\Processor Frequency"),
+            ),
+            (
+                "% Processor Performance",
+                q.add(r"\Processor Information(*)\% Processor Performance"),
+            ),
+        ];
+        q.collect();
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        q.collect();
+        for (label, counter) in counters {
+            let Some(c) = counter else {
+                println!("{label:<22} 计数器不可用");
+                continue;
+            };
+            let rows = q.double_array(c);
+            let total = rows
+                .iter()
+                .find(|(name, _)| name == "_Total")
+                .map(|(_, v)| *v);
+            println!("{label:<22} _Total = {total:?}（{} 个实例）", rows.len());
         }
     }
 }

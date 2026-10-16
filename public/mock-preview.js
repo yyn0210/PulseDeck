@@ -19,6 +19,9 @@
   // `?mock=1&temp=74` 固定温度，用来逐档核对形象（档位：38/50/63/74/84/94）
   const hot = params.get("hot") === "1";
   const noGpu = params.get("nogpu") === "1";
+  // `?mock=1&cpupdh=missing` 预览 CPU 的 PDH 通道读不到（非 Windows 或老系统）：
+  // 主频退回标称值、标签显示「基准主频」
+  const noCpuPdh = params.get("cpupdh") === "missing";
   const fixedTemp = params.has("temp") ? Number(params.get("temp")) : null;
   // 窗口外壳：真实主窗口是无装饰条窗口（自绘标题栏），最大化状态由这颗开关模拟，
   // 便于在预览里核对「最大化 → 图标变还原、四边热区收起」这一套
@@ -62,7 +65,10 @@
         logicalCores: 20,
         physicalCores: 14,
         perCore,
-        freqMhz: rnd(2980, 700),
+        freqMhz: noCpuPdh ? 2300 : rnd(2980, 700),
+        // 实时主频标记（真机上由 Windows 的 PDH `Actual Frequency` 给出；
+        // 预览里按「有读数 / 恒标称」两种状态编造）
+        freqLive: !noCpuPdh,
         fanRpm: fanOn ? rnd(2400, 260) : null,
         fanPct: null,
         fanSource: fanOn ? "root\\OpenHardwareMonitor" : "",
