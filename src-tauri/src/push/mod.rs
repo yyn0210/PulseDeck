@@ -15,6 +15,8 @@
 //! 配置落盘 `push.json`（[`PushStore`]，与 taskbar.json 同一套原子写模式）；
 //! 运行时是 [`PushHub`]：`sync()` 按配置「停旧起新」地重启推送 worker——
 //! 改任何一项（端口 / 间隔 / 指标 / 通道）都等于重启推送子系统，代价可忽略。
+//! 重启时新一代会先等旧一代放开监听端口再 `bind`（[`Released`]），
+//! 否则同一端口上会以 10048 抢跑成「监听失败」。
 //! worker 是裸 OS 线程（与采样线程同款 100ms 步进睡法），同时受全局
 //! `running` 与自身代际 stop 控制，应用退出时一并收尾。
 //!
@@ -27,8 +29,8 @@ mod ws;
 use std::io::Write;
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -50,6 +52,13 @@ pub const DEFAULT_PORT: u16 = 17432;
 pub const MIN_INTERVAL_MS: u32 = 300;
 pub const MAX_INTERVAL_MS: u32 = 10_000;
 const DEFAULT_INTERVAL_MS: u32 = 1000;
+
+/// 「停旧起新」时新一代等上一代放开端口的上限。worker 是 100ms 步进的轮询循环，
+/// 正常几毫秒到一百毫秒就等到；等超时也照样往下走，由 bind 重试兜底。
+const RELEASE_WAIT_MS: u64 = 1500;
+/// 绑定端口的小步重试窗口与步长（交接等待超时后守住最后一道，见 [`bind_listener`]）
+const BIND_RETRY_WINDOW_MS: u64 = 1500;
+const BIND_RETRY_STEP_MS: u64 = 60;
 
 /// 载荷协议版本（设备端按它决定字段解释；只在破坏性变更时才动）
 pub const SCHEMA_VERSION: u8 = 1;
@@ -496,6 +505,56 @@ pub struct PushStatus {
     pub last_push_ms: u64,
 }
 
+/// 「上一代已放开监听端口」的信号：worker 收尾（关闭监听 socket）时置位并唤醒等待者。
+///
+/// 「停旧起新」**不能只看停止位**：worker 是 100ms 步进的轮询循环，从看到停止位到
+/// 真正 drop 监听 socket 之间有一个节拍的延迟。新一代若抢在这段里 bind 同一个端口，
+/// Windows 会以 10048（每个套接字地址只允许使用一次）拒绝——端口其实是空的，只是旧
+/// socket 还没关，界面却显示「监听失败」。应用启动时必撞这条路：lib.rs 先按 push.json
+/// 起一代，前端页面起来后又把 localStorage 里的同一份配置推给 `set_push_config`
+/// （等于再 sync 一次）。等待放在**新 worker 线程里**（而非 `sync()` 里），
+/// 是因为 `set_push_config` 是同步命令，跑在 WebView2 的 IPC 回调线程上，不能在那里阻塞。
+#[derive(Default)]
+struct Released {
+    flag: Mutex<bool>,
+    cv: Condvar,
+}
+
+impl Released {
+    fn mark(&self) {
+        *self.flag.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        self.cv.notify_all();
+    }
+
+    /// 等旧一代放开端口；到点还没等到返回 false（交 bind 重试兜底）
+    fn wait(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        let mut set = self.flag.lock().unwrap_or_else(|e| e.into_inner());
+        while !*set {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return false;
+            }
+            let (guard, _) = self
+                .cv
+                .wait_timeout(set, left)
+                .unwrap_or_else(|e| e.into_inner());
+            set = guard;
+        }
+        true
+    }
+}
+
+/// 保证 [`Released`] 在 worker 退场时必定置位（含 panic 路径）。
+/// 它在 `run()` 里声明得比 `listener` 早，drop 得比它晚——置位时监听 socket 一定已关。
+struct ReleaseGuard(Arc<Released>);
+
+impl Drop for ReleaseGuard {
+    fn drop(&mut self) {
+        self.0.mark();
+    }
+}
+
 /// 推送运行时：按配置「停旧起新」地管理 worker 线程。
 ///
 /// 每一代 worker 拿一份**独占的** `Arc<Mutex<PushStatus>>`——`sync()` 重启时
@@ -512,6 +571,8 @@ pub struct PushHub {
 struct HubInner {
     /// 当前一代 worker 的停止位；没有在跑的 worker 时为 None
     stop: Option<Arc<AtomicBool>>,
+    /// 当前一代 worker 的退场信号（下一代 bind 之前等它放开端口）
+    released: Option<Arc<Released>>,
     _gen: AtomicU64,
 }
 
@@ -522,6 +583,7 @@ impl PushHub {
             app_running,
             inner: Mutex::new(HubInner {
                 stop: None,
+                released: None,
                 _gen: AtomicU64::new(0),
             }),
             status: Mutex::new(Arc::new(Mutex::new(PushStatus::default()))),
@@ -536,6 +598,8 @@ impl PushHub {
         if let Some(stop) = inner.stop.take() {
             stop.store(true, Ordering::Relaxed);
         }
+        // 旧一代的退场信号交给新 worker：它 bind 之前先等端口真的空出来
+        let prev_released = inner.released.take();
         let fresh = Arc::new(Mutex::new(PushStatus {
             enabled: cfg.enabled,
             ..Default::default()
@@ -546,12 +610,16 @@ impl PushHub {
         }
         let stop = Arc::new(AtomicBool::new(false));
         inner.stop = Some(stop.clone());
+        let released = Arc::new(Released::default());
+        inner.released = Some(released.clone());
         let worker = Worker {
             cfg: cfg.clone(),
             stop,
             app_running: self.app_running.clone(),
             sampler: self.sampler.clone(),
             status: fresh,
+            released,
+            prev_released,
         };
         std::thread::Builder::new()
             .name("pd-push".into())
@@ -573,6 +641,10 @@ struct Worker {
     app_running: Arc<AtomicBool>,
     sampler: Arc<crate::sampler::Sampler>,
     status: Arc<Mutex<PushStatus>>,
+    /// 本代退场信号（置位 = 监听 socket 已关，端口可以让给下一代了）
+    released: Arc<Released>,
+    /// 上一代的退场信号：bind 之前先等它放开端口（见 [`Released`]）
+    prev_released: Option<Arc<Released>>,
 }
 
 impl Worker {
@@ -585,9 +657,16 @@ impl Worker {
     }
 
     fn run(self) {
+        // 退场信号必须置位（含 panic 路径）：声明在 listener 之前 → drop 在它之后
+        let _release_guard = ReleaseGuard(self.released.clone());
         let mut listener: Option<TcpListener> = None;
         if self.cfg.tcp_enabled {
-            match TcpListener::bind(("0.0.0.0", self.cfg.port)) {
+            // 先等上一代真正关闭监听 socket，再 bind——否则同一端口上「停旧起新」
+            // 会以 10048 抢跑成失败（详见 [`Released`] 的说明）
+            if let Some(prev) = &self.prev_released {
+                prev.wait(Duration::from_millis(RELEASE_WAIT_MS));
+            }
+            match bind_listener(self.cfg.port) {
                 Ok(l) => {
                     // 只让 accept 非阻塞轮询；收下来的连接要显式恢复阻塞模式，
                     // 否则写超时（剔除慢消费者的判据）不生效
@@ -718,6 +797,28 @@ impl Worker {
         drop(clients);
         drop(ws_clients);
         drop(ble_server);
+        // 这里之后 `_release_guard` 才 drop 并置位退场信号——「端口已放开」的
+        // 判据就建立在「显式 drop(listener) 在它之前」这个顺序上，别调整。
+    }
+}
+
+/// 绑定监听端口，带上限的小步重试。新一代在 [`Released`] 上等到超时（上一代卡在
+/// 写超时 / BLE 交接里，迟迟没关掉监听 socket）时，这一层是最后的兜底——占位者往往
+/// 几十毫秒后就撒手。窗口内仍未成功就把最后一个错误如实交给状态行（真被别的程序
+/// 长期占着时不该假装没事）。
+///
+/// 不用 SO_REUSEADDR 兜底：2026-10-17 实测（Win11）服务端主动关闭留下的 TIME_WAIT
+/// 并不拦重新 bind，压根没有需要绕过的场景，而 SO_REUSEADDR 在 Windows 上会让
+/// **别的进程**也能绑上同一端口（抢流量），代价远大于收益。
+fn bind_listener(port: u16) -> std::io::Result<TcpListener> {
+    let deadline = Instant::now() + Duration::from_millis(BIND_RETRY_WINDOW_MS);
+    loop {
+        match TcpListener::bind(("0.0.0.0", port)) {
+            Err(_) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(BIND_RETRY_STEP_MS));
+            }
+            result => return result,
+        }
     }
 }
 
@@ -1042,6 +1143,65 @@ mod tests {
             interval_ms: 300,
             metrics: default_metrics(),
         }
+    }
+
+    /// 让内核选一个当前空闲的端口：测试要**复用同一个固定端口**（重启不换端口
+    /// 才是出问题的那条路），port=0 每代都换端口，撞不上这个竞态。
+    fn free_port() -> u16 {
+        let l = TcpListener::bind(("0.0.0.0", 0)).expect("拿到空闲端口");
+        l.local_addr().expect("内核给了地址").port() // drop 即释放
+    }
+
+    /// 同一端口上的「停旧起新」不能失败：旧 worker 从看到停止位到真正关闭监听 socket
+    /// 有一个轮询节拍的延迟（100ms），新一代若抢在这之前 bind，Windows 会以
+    /// 10048（每个地址只允许用一次）拒绝——状态行于是显示「监听失败」，而端口其实是空的。
+    /// 应用启动时必走这条路：lib.rs 先按 push.json sync 一代，前端页面起来后又把
+    /// localStorage 里的同一份配置推给 set_push_config（等于再 sync 一次）。
+    #[test]
+    fn restart_on_the_same_port_keeps_listening() {
+        let mut cfg = e2e_config();
+        cfg.port = free_port();
+        let sampler = Arc::new(crate::sampler::Sampler::new());
+        let running = Arc::new(AtomicBool::new(true));
+        let hub = PushHub::new(sampler, running.clone());
+
+        hub.sync(&cfg);
+        let port = wait_listening(&hub);
+        assert_eq!(port, cfg.port, "用的是我们指定的端口");
+
+        // 紧接着重启（前端推配置就是这么近）
+        hub.sync(&cfg);
+        assert_eq!(wait_listening(&hub), cfg.port, "新一代接管同一个端口");
+
+        running.store(false, Ordering::Relaxed);
+        hub.sync(&PushConfig::default());
+    }
+
+    /// 端口还被占着时（上一代卡在写超时 / BLE 交接里，交接等待超时了）要**小步重试**，
+    /// 而不是立刻把 10048 摆到状态行上——占位者往往几十毫秒后就撒手了。
+    /// 窗口过后仍未绑上才如实报错（真被别的程序长期占着时不该假装没事）。
+    #[test]
+    fn bind_listener_retries_until_the_squatter_releases() {
+        let squatter = TcpListener::bind(("0.0.0.0", 0)).expect("占住一个端口");
+        let port = squatter.local_addr().expect("内核给了地址").port();
+
+        let binder = std::thread::spawn(move || bind_listener(port).map(|l| l.local_addr()));
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!binder.is_finished(), "窗口内应还在重试，而不是已经失败退出");
+
+        drop(squatter);
+        let bound = binder
+            .join()
+            .expect("绑定线程不 panic")
+            .expect("占位者撒手后应绑上")
+            .expect("绑上的地址可读");
+        assert_eq!(bound.port(), port, "绑的是同一个端口");
+
+        // 一直占着不放：窗口用尽后必须回错误，不能无限重试
+        let held = TcpListener::bind(("0.0.0.0", port)).expect("重新占住");
+        let err = bind_listener(port).expect_err("端口被长期占用时应如实报错");
+        assert_eq!(err.kind(), std::io::ErrorKind::AddrInUse);
+        drop(held);
     }
 
     /// 端到端往返（裸 TCP）：起 hub（临时端口）→ 客户端连上 → 收到合法 JSON 行
