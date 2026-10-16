@@ -75,33 +75,28 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: '脉盘 PulseDeck ${{ github.ref_name }}'
           releaseBody: |
-            Windows x64 安装包（NSIS）：下载 `PulseDeck_0.9.0_x64-setup.exe` 双击安装即可，
+            Windows x64 安装包（NSIS）：下载 `PulseDeck_0.10.0_x64-setup.exe` 双击安装即可，
             无需联网、无需管理员权限。
 
-            Linux x64：deb 系发行版（Debian / Ubuntu / Deepin / UOS）下载 `PulseDeck_0.9.0_amd64.deb`，
-            执行 `sudo apt install ./PulseDeck_0.9.0_amd64.deb`；其他发行版下载
-            `PulseDeck_0.9.0_amd64.AppImage`，`chmod +x` 后直接运行。
+            Linux x64：deb 系发行版（Debian / Ubuntu / Deepin / UOS）下载 `PulseDeck_0.10.0_amd64.deb`，
+            执行 `sudo apt install ./PulseDeck_0.10.0_amd64.deb`；其他发行版下载
+            `PulseDeck_0.10.0_amd64.AppImage`，`chmod +x` 后直接运行。
             Linux 上无需提权（温度 / 风扇走 hwmon）。
 
             ## 本版更新（${{ github.ref_name }}）
 
-            本版给监控数据加了一条新出口——**数据推送**，另把 CPU 主频的读数口径补正了。
+            本版修了 0.9.0 数据推送的一个启动问题，另无其它改动。
 
-            - **数据推送（新功能）**：把监控指标按独立间隔推给外部设备当「第二屏」——DIY 小屏（ESP32 等）、
-              手机 / 平板、树莓派状态屏都能接。局域网 TCP 与蓝牙 BLE 两条通道，推同一份紧凑 JSON：
-              - **TCP 通道**：同一端口（默认 17432）同时接待裸 TCP 与 **WebSocket** —— 浏览器 / 手机网页
-                直接连上就能用，不需要原生 App；连上立即先收一拍数据，推不过来的慢客户端会被自动剔除。
-              - **蓝牙通道**：BLE 串口（Nordic UART Service，广播名 `PulseDeck`），手机 App 按 NUS 接入即可
-                （Linux 上走系统 BlueZ，桌面发行版一般自带）。
-              - 设置页「数据推送」里勾选要推的指标组（CPU / 内存 / GPU / 电池 / 网络 / 磁盘）、
-                自选节拍（300 ms ~ 10 s）；**单向只读**，设备无法向电脑发送任何指令。
-              - 字段含义与设备端接入示例见仓库 `docs/推送协议.md`（同一份协议文档）。
-            - **CPU 实时主频**（Windows）：主频改为显示 **PDH `Actual Frequency` 的实时值**
-              （如 2232~3542 MHz 随负载变化）；此前显示的 sysinfo 频率在 Windows 上只是标称值
-              （本机恒为 2300 MHz，跑满也不动）。实时值读不到时不装：卡片标签如实写明
-              「**基准主频**」并把标称值摆在那里，不拿标称冒充实时。
-            - **修复**：设置页里带开关的行会因隐藏控件把页面撑高，点开关后页面滚动位置卡死
-              （表现为设置页「上窜」且滚不回来），本版已修。
+            - **修复：TCP 推送端口「首次启动监听失败、关掉重开就好」**。原因在「停旧起新」的
+              交接时序：旧一代推送线程退出后，监听端口要晚一拍才真正放开，新一代抢在这段间隙里
+              `bind` 同一端口会以 Windows 错误 `10048`（每个套接字地址只允许使用一次）失败——
+              界面显示「监听失败」，但端口其实是空的。应用每次启动必然走到这条路
+              （启动时先按配置起一代，页面就绪后又推一次同一份配置），所以 0.9.0 上表现为
+              **首次启动 TCP 推送起不来**。
+              现在新一代会先等旧一代真正放开端口再绑定（等待放在新线程里，不阻塞界面）；
+              等超时还有小步重试兜底。顺手在开发机上验证了 Windows 主动关闭监听留下的
+              `TIME_WAIT` 并不阻拦立即重绑，所以没有加 `SO_REUSEADDR`——那个选项在 Windows 上
+              会让别的进程也能绑同一端口抢流量，不适合这里。
 
             读取 CPU 温度最准的 MSR（Intel）/ SMN（AMD）通道与联想风扇转速（仅 Windows）需要管理员桥接（PawnIO 驱动，随包分发、绝不静默安装），
             入口在设置页「高级采集」；不启用也能正常使用，温度会回退到 ACPI / PDH 通道。
