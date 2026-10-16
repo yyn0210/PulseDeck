@@ -313,6 +313,107 @@
             </div>
           </section>
 
+          <!-- 数据推送（TCP + BLE：把指标推给外部设备当第二屏） -->
+          <section class="card" id="push-card">
+            <header class="card-head">
+              <h2>数据推送</h2>
+              <span class="tag" id="push-tag">已关闭</span>
+            </header>
+            <p class="setting-desc">
+              把监控指标推给外部设备当「第二屏」：DIY 小屏、手机 / 平板、树莓派状态屏都可以。
+              TCP 通道监听本机 局域网IP:端口，设备连上来按行收 JSON（NDJSON）；浏览器 /
+              手机网页用 WebSocket 连同一端口即可直收，无需任何原生 App。蓝牙通道以 BLE 串口
+              （Nordic UART Service，广播名 PulseDeck）推送同一份 JSON 的分帧流。
+              推送为单向只读——设备无法向本机发送任何指令。协议字段见仓库 docs/推送协议.md；
+              首次开启 TCP 可能弹出 Windows 防火墙提示，允许即可。
+            </p>
+            <div class="settings-grid">
+              <label class="switch-row">
+                <span class="switch-text">
+                  <b>启用数据推送</b>
+                  <small>关闭后立即停止监听与广播；推送节拍独立于主面板刷新</small>
+                </span>
+                <input type="checkbox" id="opt-push" />
+                <i class="switch" aria-hidden="true"></i>
+              </label>
+              <div class="adv-item idle" id="push-status-tcp">
+                <i class="adv-dot" aria-hidden="true"></i>
+                <span class="adv-text">
+                  <b>TCP 通道</b>
+                  <small id="push-status-tcp-text">已关闭</small>
+                </span>
+              </div>
+              <div class="adv-item idle" id="push-status-ble">
+                <i class="adv-dot" aria-hidden="true"></i>
+                <span class="adv-text">
+                  <b>蓝牙通道</b>
+                  <small id="push-status-ble-text">已关闭</small>
+                </span>
+              </div>
+            </div>
+            <div class="setting-rows pet-rows-setting">
+              <div class="setting-row">
+                <span class="setting-text">
+                  <b>推送通道</b>
+                  <small>至少保留一项；两个通道推同一份载荷，可同时开</small>
+                </span>
+                <div class="chip-group" id="push-transports">
+                  <label class="chip">
+                    <input type="checkbox" value="tcp" /><span>TCP</span>
+                  </label>
+                  <label class="chip">
+                    <input type="checkbox" value="ble" /><span>蓝牙 BLE</span>
+                  </label>
+                </div>
+              </div>
+              <label class="setting-row">
+                <span class="setting-text">
+                  <b>TCP 端口</b>
+                  <small>1–65535；裸 TCP 与 WebSocket 共用此端口；被占用时状态行会给出原因，换个端口即可</small>
+                </span>
+                <input type="number" id="push-port" min="1" max="65535" step="1" value="17432" />
+              </label>
+              <div class="setting-row">
+                <span class="setting-text">
+                  <b>推送间隔</b>
+                  <small>蓝牙设备建议 1000ms 及以上</small>
+                </span>
+                <select id="push-interval" title="推送间隔">
+                  <option value="500">500 ms</option>
+                  <option value="1000" selected>1000 ms</option>
+                  <option value="2000">2000 ms</option>
+                  <option value="5000">5000 ms</option>
+                </select>
+              </div>
+              <div class="setting-row">
+                <span class="setting-text">
+                  <b>推送内容</b>
+                  <small>按勾选组装紧凑 JSON；未勾的组不出现在载荷里（至少保留一项）</small>
+                </span>
+                <div class="chip-group" id="push-metrics">
+                  <label class="chip">
+                    <input type="checkbox" value="cpu" /><span>CPU</span>
+                  </label>
+                  <label class="chip">
+                    <input type="checkbox" value="mem" /><span>内存</span>
+                  </label>
+                  <label class="chip">
+                    <input type="checkbox" value="gpu" /><span>GPU</span>
+                  </label>
+                  <label class="chip">
+                    <input type="checkbox" value="bat" /><span>电池</span>
+                  </label>
+                  <label class="chip">
+                    <input type="checkbox" value="net" /><span>网络</span>
+                  </label>
+                  <label class="chip">
+                    <input type="checkbox" value="disk" /><span>磁盘读写</span>
+                  </label>
+                </div>
+              </div>
+            </div>
+          </section>
+
           <!-- 高级采集（Windows 专属：PawnIO 内核驱动 + 联想厂商通道；
                非 Windows 平台由 main.js 的 applyPlatform 整块隐藏） -->
           <section class="card" id="advanced-card">

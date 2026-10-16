@@ -265,6 +265,16 @@
   let taskbarConfig = { enabled: false, metrics: ["cpu", "mem", "net"] };
   const taskbarTheme = params.get("theme") === "light" ? "light" : "dark";
   const taskbarVertical = params.get("vertical") === "1";
+  // 数据推送：同上。`?mock=1&push=on` 预览「运行中」状态行（无视开关，专看文案排版）
+  const pushOn = params.get("push") === "on";
+  let pushConfig = {
+    enabled: pushOn,
+    tcpEnabled: true,
+    bleEnabled: pushOn,
+    port: 17432,
+    intervalMs: 1000,
+    metrics: ["cpu", "mem", "gpu", "net"],
+  };
   // 风扇号手动指定：null = 自动（与后端 FanPref 同构，越界的号会被清洗成 null）
   let fanPrefCpuId = null;
 
@@ -422,6 +432,37 @@
             alive: taskbarConfig.enabled,
             hiddenFullscreen: false,
           });
+        case "get_push_config":
+          return Promise.resolve(pushConfig);
+        case "set_push_config": {
+          const next = Object.assign({}, pushConfig, args.config || {});
+          // 复刻后端的清洗规则：端口夹 1~65535（0 回默认）、间隔夹 300~10000、
+          // 指标走白名单且至少留一项、通道至少留一个（全关强制回 TCP）
+          const port = Number(next.port);
+          if (!Number.isFinite(port) || port < 1 || port > 65535) next.port = 17432;
+          next.intervalMs = Math.min(10000, Math.max(300, Number(next.intervalMs) || 1000));
+          const keys = ["cpu", "mem", "gpu", "bat", "net", "disk"];
+          next.metrics = (next.metrics || []).filter((m) => keys.includes(m));
+          if (!next.metrics.length) next.metrics = ["cpu", "mem", "gpu", "net"];
+          if (!next.tcpEnabled && !next.bleEnabled) next.tcpEnabled = true;
+          pushConfig = next;
+          return Promise.resolve(pushConfig);
+        }
+        case "push_status": {
+          // `&push=on` 无视开关强制「运行中」，专看状态行文案排版
+          const run = pushOn || pushConfig.enabled;
+          return Promise.resolve({
+            enabled: run,
+            tcpListening: run && pushConfig.tcpEnabled,
+            tcpAddr: "192.168.1.100:17432",
+            tcpClients: run && pushConfig.tcpEnabled ? 1 : 0,
+            tcpError: "",
+            bleAdvertising: run && pushConfig.bleEnabled,
+            bleClients: run && pushConfig.bleEnabled ? 1 : 0,
+            bleError: "",
+            lastPushMs: run ? Date.now() : 0,
+          });
+        }
         case "show_main_window":
           return Promise.resolve(null);
         case "install_pawnio":

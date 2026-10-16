@@ -56,6 +56,7 @@ mod fan_pref;
 mod model;
 mod pet;
 mod platform;
+mod push;
 mod sampler;
 mod taskbar;
 
@@ -80,6 +81,10 @@ pub struct AppState {
     /// 风扇的用户手动指定（落盘在 fan.json）。**必须与采样线程共用同一份**，
     /// 否则设置页改了而采样读的是启动时那份。
     fan_pref: fan_pref::FanPrefStore,
+    /// 数据推送的配置（落盘在 push.json）
+    push: push::PushStore,
+    /// 数据推送的运行时（TCP 监听 / BLE 广播的 worker 生命周期）
+    push_hub: Arc<push::PushHub>,
 }
 
 #[tauri::command]
@@ -238,6 +243,29 @@ fn taskbar_fit(app: tauri::AppHandle, width: f64, height: f64) {
 #[tauri::command]
 fn taskbar_status(app: tauri::AppHandle) -> serde_json::Value {
     taskbar::status(&app)
+}
+
+/* ---------------- 数据推送（TCP + BLE，外部设备的第二屏） ---------------- */
+
+/// 当前推送配置（前端设置页据此回显）
+#[tauri::command]
+fn get_push_config(state: State<'_, AppState>) -> push::PushConfig {
+    state.push.get()
+}
+
+/// 保存推送配置并按它重启推送子系统（改端口 / 间隔 / 指标 / 通道都是重启一代 worker）。
+/// 返回清洗后的配置，前端以返回值回显。同步命令即可——不建窗，只起后台线程。
+#[tauri::command]
+fn set_push_config(state: State<'_, AppState>, config: push::PushConfig) -> push::PushConfig {
+    let cfg = state.push.set(config);
+    state.push_hub.sync(&cfg);
+    cfg
+}
+
+/// 推送子系统状态：监听地址 / 已连接客户端数 / BLE 广播与订阅 / 最近一拍
+#[tauri::command]
+fn push_status(state: State<'_, AppState>) -> push::PushStatus {
+    state.push_hub.status()
 }
 
 /// 是否已写进开机自启
@@ -648,6 +676,13 @@ pub fn run() {
     let fan_pref = fan_pref::FanPrefStore::load();
     sampler.set_fan_pref(fan_pref.clone());
 
+    // 数据推送（TCP + BLE）：配置从磁盘恢复，开着就立刻起 worker 开始监听/广播。
+    // hub 持有采样器与全局存活位——推送的每拍数据来自 sampler.latest()，
+    // 应用退出（running=false）时 worker 随之一并收尾。
+    let push = push::PushStore::load();
+    let push_hub = Arc::new(push::PushHub::new(sampler.clone(), running.clone()));
+    push_hub.sync(&push.get());
+
     // AppState 的字段组成随平台略有不同（提权标志仅 Windows）。
     // 结构体字面量的字段位置不支持 cfg 属性，所以在构建处分叉两份。
     #[cfg(windows)]
@@ -660,6 +695,8 @@ pub fn run() {
         pet,
         taskbar,
         fan_pref,
+        push,
+        push_hub,
     };
     #[cfg(not(windows))]
     let app_state = AppState {
@@ -670,6 +707,8 @@ pub fn run() {
         pet,
         taskbar,
         fan_pref,
+        push,
+        push_hub,
     };
 
     // 窗口外壳：主窗口无原生装饰条（tauri.conf.json 的 decorations: false），
@@ -722,6 +761,9 @@ pub fn run() {
             taskbar_tick,
             taskbar_fit,
             taskbar_status,
+            get_push_config,
+            set_push_config,
+            push_status,
             show_main_window
         ])
         .setup({

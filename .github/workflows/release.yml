@@ -116,11 +116,11 @@ jobs:
       - name: 安装 Rust（stable）
         uses: dtolnay/rust-toolchain@stable
 
-      - name: 安装 Tauri 系统依赖（webkit2gtk 4.1 等；libfuse2 供 AppImage 打包工具运行）
+      - name: 安装 Tauri 系统依赖（webkit2gtk 4.1 等；libfuse2 供 AppImage 打包工具运行，libdbus-1-dev 供 BLE 推送通道的 bluer 编译）
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
-            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev libfuse2
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev libfuse2 libdbus-1-dev
 
       - name: 缓存 Cargo（注册表 + target）
         uses: Swatinem/rust-cache@v2

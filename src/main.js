@@ -103,6 +103,7 @@ function render(s) {
     renderAdvanced();
     refreshPetStatus();
     refreshTaskbarStatus();
+    refreshPushStatus();
   } else {
     renderPawnioTip();
   }
@@ -763,6 +764,175 @@ taskbarMetricInputs().forEach((input) => {
   input.addEventListener("change", () => pushTaskbarCfg(readTaskbarForm()));
 });
 
+/* ---------------- 设置：数据推送（TCP + BLE） ---------------- */
+
+/* 与任务栏挂件同一套路：前端只管改配置 + localStorage 缓存，TCP 监听 / BLE 广播
+ * 由后端 set_push_config 重启推送子系统完成（后端会清洗：端口夹边界、指标走白名单、
+ * 通道至少留一个），所以每次提交都以**返回值**回显。状态行由 push_status 每拍刷新。 */
+const PUSH_KEY = "pd.pushConfig";
+const PUSH_FALLBACK = {
+  enabled: false,
+  tcpEnabled: true,
+  bleEnabled: false,
+  port: 17432,
+  intervalMs: 1000,
+  metrics: ["cpu", "mem", "gpu", "net"],
+};
+
+const pushSwitch = document.getElementById("opt-push");
+const pushTransportBox = document.getElementById("push-transports");
+const pushPortInput = document.getElementById("push-port");
+const pushIntervalSelect = document.getElementById("push-interval");
+const pushMetricBox = document.getElementById("push-metrics");
+const pushTcpRow = document.getElementById("push-status-tcp");
+const pushBleRow = document.getElementById("push-status-ble");
+
+let pushCfg = { ...PUSH_FALLBACK };
+/** 推送子系统状态（push_status 每拍刷新，仅设置页可见时查） */
+let pushLive = null;
+
+function pushChipInputs(box) {
+  return Array.from(box.querySelectorAll('input[type="checkbox"]'));
+}
+
+function transportEnabled(key) {
+  return pushChipInputs(pushTransportBox).some((i) => i.value === key && i.checked);
+}
+
+/** 状态行：TCP 与 BLE 分开说——一个通道出错不影响另一个（后端本来就是独立降级） */
+function renderPushStatus() {
+  if (!pushTcpRow) return;
+  const on = !!pushCfg.enabled;
+
+  let tcpState = "idle";
+  let tcpText = "已关闭";
+  if (on && pushCfg.tcpEnabled) {
+    if (pushLive?.tcpListening) {
+      tcpState = "ok";
+      tcpText = `监听 ${pushLive.tcpAddr} · 已连接 ${pushLive.tcpClients} 台设备`;
+    } else if (pushLive?.tcpError) {
+      tcpState = "warn";
+      tcpText = pushLive.tcpError;
+    } else {
+      tcpText = "启动中…";
+    }
+  } else if (on) {
+    tcpText = "未启用";
+  }
+  pushTcpRow.className = `adv-item ${tcpState}`;
+  setText("push-status-tcp-text", tcpText);
+
+  let bleState = "idle";
+  let bleText = "已关闭";
+  if (on && pushCfg.bleEnabled) {
+    if (pushLive?.bleAdvertising) {
+      bleState = "ok";
+      bleText = `广播中 PulseDeck · 已订阅 ${pushLive.bleClients} 台设备`;
+    } else if (pushLive?.bleError) {
+      bleState = "warn";
+      bleText = pushLive.bleError;
+    } else {
+      bleText = "启动中…";
+    }
+  } else if (on) {
+    bleText = "未启用";
+  }
+  pushBleRow.className = `adv-item ${bleState}`;
+  setText("push-status-ble-text", bleText);
+}
+
+async function refreshPushStatus() {
+  try {
+    pushLive = await invoke("push_status");
+  } catch (e) {
+    pushLive = null;
+  }
+  renderPushStatus();
+}
+
+/** 配置 → 控件（包括后端清洗后的回显） */
+function paintPushCfg() {
+  pushSwitch.checked = !!pushCfg.enabled;
+  pushChipInputs(pushTransportBox).forEach((input) => {
+    input.checked = input.value === "tcp" ? !!pushCfg.tcpEnabled : !!pushCfg.bleEnabled;
+    const chip = input.closest(".chip");
+    if (chip) chip.classList.toggle("is-on", input.checked);
+  });
+  pushPortInput.value = String(pushCfg.port || 17432);
+  pushIntervalSelect.value = String(pushCfg.intervalMs || 1000);
+  pushChipInputs(pushMetricBox).forEach((input) => {
+    input.checked = (pushCfg.metrics || []).includes(input.value);
+    const chip = input.closest(".chip");
+    if (chip) chip.classList.toggle("is-on", input.checked);
+  });
+  setText("push-tag", pushCfg.enabled ? "已开启" : "已关闭");
+  renderPushStatus();
+}
+
+/** 控件 → 配置（端口在本地先夹一次，后端 sanitize 是最终裁判） */
+function readPushForm() {
+  const port = Number(pushPortInput.value);
+  return {
+    enabled: pushSwitch.checked,
+    tcpEnabled: transportEnabled("tcp"),
+    bleEnabled: transportEnabled("ble"),
+    port: Number.isFinite(port) ? Math.min(65535, Math.max(1, Math.round(port))) : 17432,
+    intervalMs: Number(pushIntervalSelect.value) || 1000,
+    metrics: pushChipInputs(pushMetricBox)
+      .filter((i) => i.checked)
+      .map((i) => i.value),
+  };
+}
+
+async function pushPushCfg(cfg) {
+  try {
+    pushCfg = await invoke("set_push_config", { config: cfg });
+  } catch (e) {
+    console.error("保存数据推送配置失败:", e);
+    return;
+  }
+  try {
+    localStorage.setItem(PUSH_KEY, JSON.stringify(pushCfg));
+  } catch (e) {
+    /* 隐私模式等场景不可写：本次运行内仍生效，下次启动回落到后端 push.json */
+  }
+  paintPushCfg();
+  refreshPushStatus();
+}
+
+async function initPushSettings() {
+  let stored = null;
+  try {
+    stored = JSON.parse(localStorage.getItem(PUSH_KEY) || "null");
+  } catch (e) {
+    stored = null;
+  }
+  if (stored && Array.isArray(stored.metrics)) {
+    // 本地缓存优先（用户上次的选择），顺带把推送子系统恢复起来
+    await pushPushCfg(stored);
+  } else {
+    try {
+      pushCfg = await invoke("get_push_config");
+    } catch (e) {
+      console.error("读取数据推送配置失败:", e);
+      pushCfg = { ...PUSH_FALLBACK };
+    }
+  }
+  paintPushCfg();
+  await refreshPushStatus();
+}
+
+pushSwitch.addEventListener("change", () => pushPushCfg(readPushForm()));
+pushChipInputs(pushTransportBox).forEach((input) => {
+  input.addEventListener("change", () => pushPushCfg(readPushForm()));
+});
+// 端口用 change（失焦/回车才提交），逐键重启推送子系统没有意义
+pushPortInput.addEventListener("change", () => pushPushCfg(readPushForm()));
+pushIntervalSelect.addEventListener("change", () => pushPushCfg(readPushForm()));
+pushChipInputs(pushMetricBox).forEach((input) => {
+  input.addEventListener("change", () => pushPushCfg(readPushForm()));
+});
+
 /* ---------------- 页面切换：监控 / 设置 ---------------- */
 
 const viewMonitor = document.getElementById("view-monitor");
@@ -780,6 +950,7 @@ function switchView(name) {
     renderAdvanced();
     refreshPetStatus();
     refreshTaskbarStatus();
+    refreshPushStatus();
   }
   // 提示条只在监控页出现，切页后立即同步
   renderPawnioTip();
@@ -887,4 +1058,5 @@ initWindowChrome();
 initSettings();
 initPetSettings();
 initTaskbarSettings();
+initPushSettings();
 tick().then(schedule);
