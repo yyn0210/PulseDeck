@@ -53,6 +53,7 @@ mod battery;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod cpu_vendor;
 mod fan_pref;
+mod mobile_layout;
 mod model;
 mod pet;
 mod platform;
@@ -85,6 +86,8 @@ pub struct AppState {
     push: push::PushStore,
     /// 数据推送的运行时（TCP 监听 / BLE 广播的 worker 生命周期）
     push_hub: Arc<push::PushHub>,
+    /// 移动 App 端布局（手机 / 平板两份，落盘在 mobile-layout.json，经推送通道下发给 App）
+    mobile_layout: mobile_layout::MobileLayoutStore,
 }
 
 #[tauri::command]
@@ -266,6 +269,59 @@ fn set_push_config(state: State<'_, AppState>, config: push::PushConfig) -> push
 #[tauri::command]
 fn push_status(state: State<'_, AppState>) -> push::PushStatus {
     state.push_hub.status()
+}
+
+/* ---------- 移动 App 端布局（编辑入口在监控页「编辑布局 → 手机」） ---------- */
+
+/// 当前某一设备形态（`device` = "phone" / "pad"，未知按手机）的移动端布局：
+/// 返回流式 / 固定一屏两份布局 + 当前激活模式，前端编辑器启动时回显。
+#[tauri::command]
+fn get_mobile_layout(
+    state: State<'_, AppState>,
+    device: String,
+) -> mobile_layout::DeviceLayouts {
+    state.mobile_layout.get_device(&device)
+}
+
+/// 保存某一设备形态、某一模式（flow / grid）的布局。只有该模式正是设备当前
+/// 激活模式时才更新推送槽——已连接的 App 在下一个 100ms 节拍收到全量重发。
+/// 返回清洗后的布局，前端以返回值回显。同步命令即可——只写文件与内存槽，不建窗。
+#[tauri::command]
+fn set_mobile_layout(
+    state: State<'_, AppState>,
+    device: String,
+    mode: mobile_layout::LayoutMode,
+    layout: mobile_layout::MobileLayout,
+) -> mobile_layout::MobileLayout {
+    let clean = state.mobile_layout.set(&device, mode, layout);
+    if state.mobile_layout.mode_of(&device) == mode {
+        state.push_hub.set_layout(
+            &device,
+            mobile_layout::to_message(&device, mode, &clean),
+        );
+    }
+    clean
+}
+
+/// 切换某一设备形态的激活布局模式（流式 / 固定一屏）并立即更新推送槽。
+/// 返回规范化后的模式串（前端不依赖，但方便回显 / 排查）。
+#[tauri::command]
+fn set_mobile_layout_mode(
+    state: State<'_, AppState>,
+    device: String,
+    mode: mobile_layout::LayoutMode,
+) -> String {
+    let layouts = state.mobile_layout.set_mode(&device, mode);
+    let layout = if mode == mobile_layout::LayoutMode::Grid {
+        layouts.grid
+    } else {
+        layouts.flow
+    };
+    state.push_hub.set_layout(
+        &device,
+        mobile_layout::to_message(&device, mode, &layout),
+    );
+    mode.as_str().to_string()
 }
 
 /// 是否已写进开机自启
@@ -681,6 +737,17 @@ pub fn run() {
     // 应用退出（running=false）时 worker 随之一并收尾。
     let push = push::PushStore::load();
     let push_hub = Arc::new(push::PushHub::new(sampler.clone(), running.clone()));
+    // 移动端布局：磁盘恢复并预载进推送槽——worker 起来后首个连上的 App 就能收到。
+    // 手机 / 平板两种形态各一条（协议「只出不进」，桌面不感知对端形态，两条都发）；
+    // 每条按该设备当前激活模式（流式 / 固定一屏）生成。
+    let mobile_layout = mobile_layout::MobileLayoutStore::load();
+    for device in [mobile_layout::DEVICE_PHONE, mobile_layout::DEVICE_PAD] {
+        let mode = mobile_layout.mode_of(device);
+        let layout = mobile_layout.get(device, mode);
+        if let Some(msg) = mobile_layout::to_message(device, mode, &layout) {
+            push_hub.set_layout(device, Some(msg));
+        }
+    }
     push_hub.sync(&push.get());
 
     // AppState 的字段组成随平台略有不同（提权标志仅 Windows）。
@@ -697,6 +764,7 @@ pub fn run() {
         fan_pref,
         push,
         push_hub,
+        mobile_layout,
     };
     #[cfg(not(windows))]
     let app_state = AppState {
@@ -709,6 +777,7 @@ pub fn run() {
         fan_pref,
         push,
         push_hub,
+        mobile_layout,
     };
 
     // 窗口外壳：主窗口无原生装饰条（tauri.conf.json 的 decorations: false），
@@ -764,6 +833,9 @@ pub fn run() {
             get_push_config,
             set_push_config,
             push_status,
+            get_mobile_layout,
+            set_mobile_layout,
+            set_mobile_layout_mode,
             show_main_window
         ])
         .setup({

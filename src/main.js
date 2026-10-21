@@ -22,20 +22,236 @@ const state = {
 const banner = document.getElementById("banner");
 
 /* ---------------- 监控页小组件面板 ----------------
- * 卡片全部组件化（src/widgets/），按布局配置（localStorage pd.layout）挂载；
- * 渲染循环只负责把快照分发给在场的组件。布局编辑（拖拽 / 缩放 / 增删）见 editmode.js。 */
+ * 卡片全部组件化（src/widgets/），按布局配置挂载；渲染循环只负责把快照分发
+ * 给在场的组件。布局编辑（拖拽 / 缩放 / 增删）见 editmode.js。
+ * 同一套编辑器管五套目标：桌面主面板（pd.layout），以及移动 App 的
+ * 手机 / 平板 × 流式 / 固定一屏四份（pd.mlayout / pd.mlayoutPad /
+ * pd.mlayoutGrid / pd.mlayoutPadGrid）——后四套经 set_mobile_layout 下发给
+ * App（App 端按设备 + 激活模式渲染自己的那份），见下方「移动 App 布局」段。 */
 const gridEl = document.getElementById("grid");
-const dashboard = new Dashboard(gridEl);
-dashboard.onchange = (list) => layout.save(list);
-dashboard.mountAll(layout.load());
-initEditmode({
-  dashboard,
-  grid: gridEl,
+const dashboard = new Dashboard(gridEl, layout.DESK);
+dashboard.onchange = (list) => layout.save(list, layout.DESK);
+dashboard.mountAll(layout.load(layout.DESK));
+
+const gridMobileEl = document.getElementById("grid-mobile");
+const phoneFlowDashboard = new Dashboard(gridMobileEl, layout.MOBILE_PHONE_FLOW);
+const gridMobileGridEl = document.getElementById("grid-mobile-grid");
+const phoneGridDashboard = new Dashboard(gridMobileGridEl, layout.MOBILE_PHONE_GRID);
+const gridPadEl = document.getElementById("grid-pad");
+const padFlowDashboard = new Dashboard(gridPadEl, layout.MOBILE_PAD_FLOW);
+const gridPadGridEl = document.getElementById("grid-pad-grid");
+const padGridDashboard = new Dashboard(gridPadGridEl, layout.MOBILE_PAD_GRID);
+
+/* 每台设备当前激活的模式（流式 / 固定一屏）。编辑器的模式按钮与 App 的显示
+ * 都跟着它走；localStorage 优先，没存过时由后端 mobile-layout.json 决定。 */
+const mobileModes = {
+  phone: layout.loadMode(layout.MOBILE_PHONE_FLOW),
+  pad: layout.loadMode(layout.MOBILE_PAD_FLOW),
+};
+
+const editmodeApi = initEditmode({
+  targets: {
+    desk: { dashboard, grid: gridEl },
+    phone: {
+      flow: { dashboard: phoneFlowDashboard, grid: gridMobileEl },
+      grid: { dashboard: phoneGridDashboard, grid: gridMobileGridEl },
+    },
+    pad: {
+      flow: { dashboard: padFlowDashboard, grid: gridPadEl },
+      grid: { dashboard: padGridDashboard, grid: gridPadGridEl },
+    },
+  },
+  modes: mobileModes,
+  onModeChange: onMobileModeChange,
   editBtn: document.getElementById("edit-btn"),
   editbar: document.getElementById("editbar"),
   chipsEl: document.getElementById("editbar-chips"),
   resetBtn: document.getElementById("edit-reset"),
+  noticeEl: document.getElementById("editbar-note"),
 });
+
+/* ---------------- 移动 App 布局（经数据推送给 App） ----------------
+ * 每个设备形态两份布局：流式（flow）与固定一屏（grid）。双存储：
+ * localStorage（pd.mlayout / pd.mlayoutPad / pd.mlayoutGrid / pd.mlayoutPadGrid，
+ * 编辑快速持久化）+ 后端 mobile-layout.json（推送 worker 的数据源，worker
+ * 读不到 localStorage）。本地缓存优先推给后端（与数据推送设置同套路）；
+ * 提交后以后端返回的清洗结果为准回显。 */
+
+/** 组件类型 → 推送指标组：给移动端加组件时自动勾上对应组，App 上立刻有数据。
+ * power / trend 由已推送的字段组合而来，不需要额外组。 */
+const MOBILE_METRIC_GROUP = {
+  cpu: "cpu",
+  mem: "mem",
+  bat: "bat",
+  gpu: "gpu",
+  net: "net",
+  disk: "disk",
+  cores: "cores",
+  procCpu: "procs",
+  procMem: "procs",
+};
+
+/** 每份布局（device:mode）上次出现过的组件类型。只看本份布局：平板固定一屏
+ * 里有 cores 不代表手机流式加 cores 时该组已经勾上——自动勾组按份判断。 */
+const lastTypesByKey = new Map();
+/** 后端清洗结果回写期间跳过 onchange 的副作用（避免 保存→重挂→再保存 的循环） */
+const applyingBackendLayout = new Set(); // 挂 "device:mode"
+/** 启动回填期间先不做后端同步 / 自动勾组（由 initMobileDevice 统一按顺序推） */
+let hydratingMobile = 2;
+
+/** 把一份移动端布局接到存储 / 推送组 / 后端命令上（4 份各调一次） */
+function wireMobileDashboard(dash, profile) {
+  const key = `${profile.device}:${profile.mode}`;
+  dash.onchange = async (list) => {
+    layout.save(list, profile);
+    if (hydratingMobile > 0) return;
+    if (applyingBackendLayout.has(key)) return;
+    // 新增的组件类型 → 自动勾选对应推送组（显式写穿：设置页勾选状态如实更新，可改回）。
+    // 按「本份布局」判断：同一类型在别的设备/模式里出现过，不影响这份首次添加时勾组
+    const prevTypes = lastTypesByKey.get(key) || new Set();
+    const types = new Set(list.map((w) => w.type));
+    for (const t of types) {
+      if (!prevTypes.has(t)) ensurePushGroup(MOBILE_METRIC_GROUP[t]);
+    }
+    lastTypesByKey.set(key, types);
+    try {
+      const clean = await invoke("set_mobile_layout", {
+        device: profile.device,
+        mode: profile.mode,
+        layout: { v: 1, widgets: list },
+      });
+      if (clean && Array.isArray(clean.widgets) && JSON.stringify(clean.widgets) !== JSON.stringify(list)) {
+        // 两边清洗规则一致时不会走到这里；真不一致时以后端为准重挂（只弹一次，收敛）
+        applyingBackendLayout.add(key);
+        lastTypesByKey.set(key, new Set(clean.widgets.map((w) => w.type)));
+        dash.mountAll(clean.widgets);
+        applyingBackendLayout.delete(key);
+      }
+    } catch (e) {
+      console.error(`保存移动端布局失败（${key}）:`, e);
+    }
+  };
+}
+
+wireMobileDashboard(phoneFlowDashboard, layout.MOBILE_PHONE_FLOW);
+wireMobileDashboard(phoneGridDashboard, layout.MOBILE_PHONE_GRID);
+wireMobileDashboard(padFlowDashboard, layout.MOBILE_PAD_FLOW);
+wireMobileDashboard(padGridDashboard, layout.MOBILE_PAD_GRID);
+
+/** 读 localStorage 里某份布局（结构合法才返回，损坏/缺失返回 null） */
+function readStoredLayout(profile) {
+  try {
+    const stored = JSON.parse(localStorage.getItem(profile.key) || "null");
+    if (stored && Array.isArray(stored.widgets)) return layout.sanitize(stored.widgets, profile);
+  } catch (e) {
+    /* 损坏的存档按没有处理 */
+  }
+  return null;
+}
+
+/** 读 localStorage 里某设备的激活模式；没写过返回 null（不是默认 flow） */
+function readStoredMode(profile) {
+  try {
+    const v = localStorage.getItem(profile.modeKey);
+    if (v === "grid" || v === "flow") return v;
+  } catch (e) {
+    /* 隐私模式等 */
+  }
+  return null;
+}
+
+/** 编辑器切换模式：持久化 + 让刚激活的那份布局的组件都有数据 + 通知后端推送。 */
+async function onMobileModeChange(device, mode) {
+  const isPad = device === "pad";
+  const flowProfile = isPad ? layout.MOBILE_PAD_FLOW : layout.MOBILE_PHONE_FLOW;
+  layout.saveMode(flowProfile, mode);
+  const dash = mode === "grid"
+    ? (isPad ? padGridDashboard : phoneGridDashboard)
+    : (isPad ? padFlowDashboard : phoneFlowDashboard);
+  for (const it of dash.items) {
+    await ensurePushGroup(MOBILE_METRIC_GROUP[it.type]);
+  }
+  try {
+    await invoke("set_mobile_layout_mode", { device, mode });
+  } catch (e) {
+    console.error(`切换移动端布局模式失败（${device}/${mode}）:`, e);
+  }
+}
+
+/** 初始化一台设备的两份布局：localStorage 优先（顺带推给后端），否则读后端，
+ * 都没有回默认；再按本地/后端记录恢复激活模式并推送对应布局消息。 */
+async function initMobileDevice(device) {
+  const isPad = device === "pad";
+  const flowProfile = isPad ? layout.MOBILE_PAD_FLOW : layout.MOBILE_PHONE_FLOW;
+  const gridProfile = isPad ? layout.MOBILE_PAD_GRID : layout.MOBILE_PHONE_GRID;
+  const flowDash = isPad ? padFlowDashboard : phoneFlowDashboard;
+  const gridDash = isPad ? padGridDashboard : phoneGridDashboard;
+  // 回填期间跳过 onchange 的后端同步；mountAll 的 onchange 是同步执行的，
+  // 挂载完立刻放行，用户在后续等后端返回期间就能正常加组件 / 勾组。
+  let released = false;
+  const releaseHydration = () => {
+    if (released) return;
+    released = true;
+    hydratingMobile = Math.max(0, hydratingMobile - 1);
+  };
+  try {
+    let backend = null;
+    try {
+      backend = await invoke("get_mobile_layout", { device });
+    } catch (e) {
+      console.error(`读取移动端布局失败（${device}）:`, e);
+    }
+    // 兼容旧的单布局返回（{v,widgets}）——只当作流式那份
+    const backendFlow = backend && backend.flow && Array.isArray(backend.flow.widgets)
+      ? backend.flow.widgets
+      : backend && Array.isArray(backend.widgets)
+        ? backend.widgets
+        : null;
+    const backendGrid = backend && backend.grid && Array.isArray(backend.grid.widgets)
+      ? backend.grid.widgets
+      : null;
+    const backendMode = backend && (backend.mode === "flow" || backend.mode === "grid")
+      ? backend.mode
+      : null;
+
+    const storedFlow = readStoredLayout(flowProfile);
+    const storedGrid = readStoredLayout(gridProfile);
+    const flowList = storedFlow || (backendFlow ? layout.sanitize(backendFlow, flowProfile) : flowProfile.defaults());
+    const gridList = storedGrid || (backendGrid ? layout.sanitize(backendGrid, gridProfile) : gridProfile.defaults());
+
+    lastTypesByKey.set(`${device}:flow`, new Set(flowList.map((w) => w.type)));
+    lastTypesByKey.set(`${device}:grid`, new Set(gridList.map((w) => w.type)));
+    flowDash.mountAll(flowList);
+    gridDash.mountAll(gridList);
+    releaseHydration();
+
+    const mode = readStoredMode(flowProfile) || backendMode || "flow";
+    mobileModes[device] = mode;
+    editmodeApi.setModes({ ...mobileModes });
+
+    try {
+      if (storedFlow) {
+        await invoke("set_mobile_layout", {
+          device,
+          mode: "flow",
+          layout: { v: 1, widgets: flowList },
+        });
+      }
+      if (storedGrid) {
+        await invoke("set_mobile_layout", {
+          device,
+          mode: "grid",
+          layout: { v: 1, widgets: gridList },
+        });
+      }
+      await invoke("set_mobile_layout_mode", { device, mode });
+    } catch (e) {
+      console.error(`同步移动端布局失败（${device}）:`, e);
+    }
+  } finally {
+    releaseHydration();
+  }
+}
 
 /* ---------------- 主循环 ---------------- */
 
@@ -96,6 +312,12 @@ function schedule() {
 function render(s) {
   renderHeader(s);
   dashboard.updateAll(s, { showIdleIface: state.showIdleIface });
+  // 手机 / 平板的两种模式预览平时隐藏，但快照分发照常（组件轻、1Hz 代价可忽略，
+  // 编辑时立即可见）
+  phoneFlowDashboard.updateAll(s, { showIdleIface: state.showIdleIface });
+  phoneGridDashboard.updateAll(s, { showIdleIface: state.showIdleIface });
+  padFlowDashboard.updateAll(s, { showIdleIface: state.showIdleIface });
+  padGridDashboard.updateAll(s, { showIdleIface: state.showIdleIface });
   renderThermalHint(s);
 
   // 设置页可见时才刷新高级采集状态，避免在监控页做无谓 DOM 写入
@@ -455,6 +677,10 @@ intervalSelect.addEventListener("change", async () => {
   state.intervalMs = ms;
   // 图表横轴长度跟着间隔走（≥2s 时窗口减半），转发给持有图表的组件
   dashboard.setInterval(ms);
+  phoneFlowDashboard.setInterval(ms);
+  phoneGridDashboard.setInterval(ms);
+  padFlowDashboard.setInterval(ms);
+  padGridDashboard.setInterval(ms);
   schedule();
 });
 
@@ -900,6 +1126,16 @@ async function pushPushCfg(cfg) {
   refreshPushStatus();
 }
 
+/** 给手机布局加组件后自动勾选对应的推送组（App 上刚加的卡立即可见数据）。
+ * 以当前表单读出的配置为底（尊重用户未提交的改动），写穿到后端与设置页。 */
+async function ensurePushGroup(group) {
+  if (!group) return;
+  const cfg = readPushForm();
+  if ((cfg.metrics || []).includes(group)) return;
+  cfg.metrics = [...(cfg.metrics || []), group];
+  await pushPushCfg(cfg);
+}
+
 async function initPushSettings() {
   let stored = null;
   try {
@@ -1059,4 +1295,6 @@ initSettings();
 initPetSettings();
 initTaskbarSettings();
 initPushSettings();
+initMobileDevice("phone");
+initMobileDevice("pad");
 tick().then(schedule);

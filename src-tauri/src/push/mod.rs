@@ -22,6 +22,14 @@
 //!
 //! 每拍**有连接才干活**：`sampler.latest()` 拉最后一次快照 → 组装载荷 →
 //! 序列化一次 → 扇出给所有 TCP 客户端与 BLE 订阅者；无连接时零开销。
+//!
+//! 除每拍载荷外还有一组**一次性消息**：移动端布局（schema 2，见
+//! [`PushHub::set_layout`]）——手机 / 平板两种设备形态各一条（带 `device` 字段，
+//! 先 pad 后 phone 连发），连接建立后必达、布局每次变更立即全量重发，
+//! 由 `crate::mobile_layout` 供数（桌面端「编辑布局 → 手机 / 平板」目标写的就是它）。
+//! 另有一条**静态信息消息**（schema 3，[`build_host_info`]）：CPU 型号 / 逐卷磁盘
+//! 容量这类「PC 卡片要、但每拍预算塞不下」的慢变数据——连接后必达、内容变化重发、
+//! 60 拍心跳兜底（BLE 丢连接突发时的自愈路径），先于两条布局消息发出。
 
 mod ble;
 mod ws;
@@ -39,8 +47,11 @@ use crate::model::Snapshot;
 /// 配置文件名（放在应用数据目录下）
 const FILE_NAME: &str = "push.json";
 
-/// 可推送的指标组（与设置页 chip 的 value 一致）
-pub const METRIC_KEYS: [&str; 6] = ["cpu", "mem", "gpu", "bat", "net", "disk"];
+/// 可推送的指标组（与设置页 chip 的 value 一致）。cores / procs 是移动端布局
+/// 功能引入的可选组（默认不勾选，存量 DIY 屏设备的载荷一个字节都不变）。
+pub const METRIC_KEYS: [&str; 8] = [
+    "cpu", "mem", "gpu", "bat", "net", "disk", "cores", "procs",
+];
 
 /// 默认推送：CPU / 内存 / GPU / 网络（温度随 CPU 组、电池组默认不开——台式机没有）
 const DEFAULT_METRICS: [&str; 4] = ["cpu", "mem", "gpu", "net"];
@@ -240,6 +251,10 @@ pub struct PushPayload {
     pub net: Option<PushNet>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub disk: Option<PushDisk>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cores: Option<PushCores>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub procs: Option<PushProcs>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -255,6 +270,9 @@ pub struct PushCpu {
     pub power_w: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fan_rpm: Option<f64>,
+    /// 风扇占空比（%）：没有真实 RPM 的机型靠它显示风扇状态
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fan_pct: Option<f64>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -263,6 +281,8 @@ pub struct PushMem {
     pub usage_pct: f64,
     pub used_bytes: u64,
     pub total_bytes: u64,
+    // 「可用」不单独推：sysinfo 的 used 恒等于 total−available（两平台同口径），
+    // 设备端 total−used 即精确值——每拍预算装不下第三个 12 位字节数
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -280,6 +300,9 @@ pub struct PushGpu {
     pub power_w: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fan_rpm: Option<f64>,
+    /// 风扇占空比（%）：笔记本独显常见只有占空比、没有真实 RPM
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fan_pct: Option<f64>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -292,6 +315,12 @@ pub struct PushBat {
     /// 电池功率（W，正值）：充电取充入功率、否则取放电功率，方向看 `charging`
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rate_w: Option<f64>,
+    /// 剩余续航（秒）；充电中 / 固件未提供时省略
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seconds_to_empty: Option<u64>,
+    /// 充满还需（秒）；未在充电 / 固件未提供时省略
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seconds_to_full: Option<u64>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -299,6 +328,12 @@ pub struct PushBat {
 pub struct PushNet {
     pub down_bps: u64,
     pub up_bps: u64,
+    /// 开机以来累计收 / 发（MiB 取整——字节计数是 13~15 位数字，BLE 按字节计费；
+    /// 1MB 粒度对「累计流量」展示毫无损失）。显式 rename 保留 MiB 的大写，与 memMiB 同款
+    #[serde(rename = "totalReceivedMiB")]
+    pub total_received_mib: u64,
+    #[serde(rename = "totalTransmittedMiB")]
+    pub total_transmitted_mib: u64,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -306,6 +341,44 @@ pub struct PushNet {
 pub struct PushDisk {
     pub read_bps: u64,
     pub write_bps: u64,
+}
+
+/// 每核负载。取整数 0~100：百分比数组按字符计费，1 位小数会让 16 核多花
+/// 一倍字节（BLE 空口按字节计费，手机端进度条也用不着小数）。
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PushCores {
+    pub load: Vec<u8>,
+}
+
+/// 进程榜条目（按 CPU 排序的 top N；内存榜由设备端按 `memMiB` 重排同一条列表）
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PushProc {
+    /// 截到 16 字符（按字符不按字节，进程名可能含非 ASCII）
+    pub name: String,
+    pub cpu_pct: f64,
+    /// 显式 rename：serde camelCase 会把 `mem_mib` 转成 `memMib`，单位写法要保留 MiB 的大写
+    #[serde(rename = "memMiB")]
+    pub mem_mib: u64,
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PushProcs {
+    pub list: Vec<PushProc>,
+}
+
+/// 进程榜条数与名字上限（BLE 预算：5 条约 250 字节）
+const PROC_TOP_N: usize = 5;
+const PROC_NAME_CHARS: usize = 16;
+
+/// 按字符数截断（不能按字节切：会把多字节字符拦腰截断成非法 UTF-8）
+fn truncate_chars(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        return s.to_string();
+    }
+    s.chars().take(max_chars).collect()
 }
 
 /// 从快照组装载荷：`metrics` 决定包含哪些组（读不到的组如实省略，
@@ -331,6 +404,7 @@ pub fn build_payload(s: &Snapshot, metrics: &[String]) -> PushPayload {
             temp_c: s.thermal.cpu_temp_c.filter(finite).map(round1),
             power_w: s.thermal.cpu_power_w.filter(finite).map(round1),
             fan_rpm: s.cpu.fan_rpm.filter(finite).map(round1),
+            fan_pct: s.cpu.fan_pct.filter(finite).map(round1),
         }),
         mem: has("mem").then(|| PushMem {
             usage_pct: round1(s.memory.usage_pct),
@@ -350,6 +424,7 @@ pub fn build_payload(s: &Snapshot, metrics: &[String]) -> PushPayload {
                 .map(round1),
             power_w: s.gpu.power_w.filter(finite).map(round1),
             fan_rpm: s.gpu.fan_rpm.filter(finite).map(round1),
+            fan_pct: s.gpu.fan_pct.filter(finite).map(round1),
         }),
         bat: (has("bat") && s.battery.has_battery).then(|| PushBat {
             pct: s.battery.percent.filter(finite).map(round1),
@@ -357,15 +432,24 @@ pub fn build_payload(s: &Snapshot, metrics: &[String]) -> PushPayload {
             ac_online: s.battery.ac_online,
             rate_w: if s.battery.charging {
                 s.battery.charge_rate_w
+            } else if s.battery.ac_online {
+                // 已接入未充电（满电续充 / 养护模式）如实给 0——与 PC 电源卡同一口径。
+                // 不能落到 discharge_rate_w：那种状态下它通常是 None，App 端会因此
+                // 把「电池」明细行整行隐藏，和桌面预览对不上。
+                Some(0.0)
             } else {
                 s.battery.discharge_rate_w
             }
             .filter(finite)
             .map(round1),
+            seconds_to_empty: s.battery.seconds_to_empty,
+            seconds_to_full: s.battery.seconds_to_full,
         }),
         net: has("net").then(|| PushNet {
             down_bps: s.net.rx_bytes_per_sec,
             up_bps: s.net.tx_bytes_per_sec,
+            total_received_mib: s.net.total_received / MIB,
+            total_transmitted_mib: s.net.total_transmitted / MIB,
         }),
         disk: has("disk").then(|| {
             let (read_bps, write_bps) = s.disks.iter().fold((0u64, 0u64), |(r, w), d| {
@@ -379,10 +463,184 @@ pub fn build_payload(s: &Snapshot, metrics: &[String]) -> PushPayload {
                 write_bps,
             }
         }),
+        // 首拍等场景 per_core 可能还是空的——如实省略整组（设备端按「未勾选」处理）
+        cores: (has("cores") && !s.cpu.per_core.is_empty()).then(|| PushCores {
+            load: s
+                .cpu
+                .per_core
+                .iter()
+                .map(|v| v.round().clamp(0.0, 100.0) as u8)
+                .collect(),
+        }),
+        procs: has("procs").then(|| PushProcs {
+            list: s
+                .cpu
+                .top_cpu
+                .iter()
+                .take(PROC_TOP_N)
+                .map(|p| PushProc {
+                    name: truncate_chars(&p.name, PROC_NAME_CHARS),
+                    cpu_pct: round1(p.cpu_usage),
+                    mem_mib: p.memory_bytes / (1024 * 1024),
+                })
+                .collect(),
+        }),
     }
 }
 
+/* ---------------- 静态信息消息（schema 3，纯函数） ---------------- */
+
+/// 静态信息消息的协议号（与每拍载荷的 1、布局消息的 2 区分）
+pub const INFO_SCHEMA: u8 = 3;
+
+/// GiB 换算（info 消息里的磁盘容量按 GiB 取整——整数量级让「内容变了」极少触发重发）
+const GIB: u64 = 1024 * 1024 * 1024;
+/// MiB 换算（网络累计流量的取整粒度）
+const MIB: u64 = 1024 * 1024;
+/// 逐卷磁盘条数上限（info 消息自己的体积闸门：4 卷全量约 240B）
+const INFO_VOLUME_CAP: usize = 4;
+/// 挂载点 / 型号 / 其它显卡名的截断长度（按字符，与进程名截断同款理由）。
+/// brand 取 36：主流型号串（"12th Gen Intel(R) Core(TM) i7-12700H" 36 字符、
+/// "AMD Ryzen 7 7745HX 8-Core Processor" 35）都能完整放下，不会切在型号中间。
+const INFO_MOUNT_CHARS: usize = 16;
+const INFO_BRAND_CHARS: usize = 36;
+const INFO_OTHERS_CAP: usize = 2;
+/// info 心跳重发间隔（拍）。BLE 通道容量 2 且不排队，连接建立时的
+/// 「info + 两条布局 + 首拍」突发可能无声丢掉 info——它不像布局有
+/// 「PC 端每次编辑都重发」的自愈路径，靠周期重发兜底（60 拍 ≈ 1 分钟 @1Hz）。
+const INFO_HEARTBEAT_TICKS: u32 = 60;
+
+/// 静态 / 慢变信息（schema 3）：承载 PC 卡片要、但每拍载荷预算塞不下的数据——
+/// CPU 型号与核心数、主卡显存总量、其它显卡名、电池 Wh、逐卷磁盘容量。
+/// 组随 metrics 勾选（与每拍载荷同款缺席语义）；设备端按「schema≠1 忽略」处理，
+/// 旧设备零影响。
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct HostInfo {
+    pub schema: u8,
+    #[serde(rename = "type")]
+    pub kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cpu: Option<InfoCpu>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu: Option<InfoGpu>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bat: Option<InfoBat>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disk: Option<InfoDisk>,
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct InfoCpu {
+    pub brand: String,
+    pub physical_cores: usize,
+    pub logical_cores: usize,
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct InfoGpu {
+    /// 主卡显存总量（byte）；拿不到（核显走 PDH 无显存计数等）时省略
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mem_total_bytes: Option<u64>,
+    /// 主卡之外的设备名（App 端「其它显卡」行；占用%是每拍数据，预算不够不搬）
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub others: Vec<String>,
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct InfoBat {
+    /// 剩余 / 满充容量（Wh，取整——整数量级让重发极少触发）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remaining_wh: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub full_charge_wh: Option<u64>,
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct InfoDisk {
+    /// 逐卷容量（按挂载点排序、cap [`INFO_VOLUME_CAP`]；每卷读写速率不搬——
+    /// 每拍预算装不下，App 端用整卡合计速率行）
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub volumes: Vec<InfoVolume>,
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct InfoVolume {
+    pub mount: String,
+    /// 已用百分比（整数）
+    pub pct: u8,
+    /// 显式 rename：camelCase 会把 `used_gib` 转成 `usedGib`，GiB 的大写要保留（与 memMiB 同款）
+    #[serde(rename = "usedGiB")]
+    pub used_gib: u64,
+    #[serde(rename = "totalGiB")]
+    pub total_gib: u64,
+}
+
+/// 从快照组装静态信息消息。纯函数 + 产出可序列化结构：worker 每拍序列化成
+/// 字符串与上次比对，变了才重发（brand / 核心数 / 容量 GiB / 整数 Wh 都是
+/// 慢变量，正常运行几乎不会变）。
+pub fn build_host_info(s: &Snapshot, metrics: &[String]) -> HostInfo {
+    let has = |k: &str| metrics.iter().any(|m| m == k);
+    let main_gpu = || s.gpu.devices.get(s.gpu.main_index as usize);
+    HostInfo {
+        schema: INFO_SCHEMA,
+        kind: "info",
+        cpu: has("cpu").then(|| InfoCpu {
+            brand: truncate_chars(s.cpu.brand.trim(), INFO_BRAND_CHARS),
+            physical_cores: s.cpu.physical_cores,
+            logical_cores: s.cpu.logical_cores,
+        }),
+        gpu: (has("gpu") && s.gpu.available)
+            .then(|| InfoGpu {
+                mem_total_bytes: main_gpu()
+                    .map(|d| d.mem_total_bytes)
+                    .filter(|t| *t > 0),
+                others: s
+                    .gpu
+                    .devices
+                    .iter()
+                    .filter(|d| d.index != s.gpu.main_index)
+                    .take(INFO_OTHERS_CAP)
+                    .map(|d| truncate_chars(&d.name, PROC_NAME_CHARS))
+                    .collect(),
+            }),
+        bat: (has("bat") && s.battery.has_battery).then(|| InfoBat {
+            remaining_wh: s.battery.remaining_wh.map(|v| v.round() as u64),
+            full_charge_wh: s.battery.full_charge_wh.map(|v| v.round() as u64),
+        }),
+        disk: has("disk").then(|| InfoDisk {
+            volumes: {
+                let mut vs: Vec<InfoVolume> = s
+                    .disks
+                    .iter()
+                    .filter(|d| d.total_bytes > 0)
+                    .map(|d| InfoVolume {
+                        mount: truncate_chars(&d.mount_point, INFO_MOUNT_CHARS),
+                        pct: d.usage_pct.round().clamp(0.0, 100.0) as u8,
+                        used_gib: d.used_bytes / GIB,
+                        total_gib: d.total_bytes / GIB,
+                    })
+                    .collect();
+                vs.sort_by(|a, b| a.mount.cmp(&b.mount));
+                vs.truncate(INFO_VOLUME_CAP);
+                vs
+            },
+        }),
+    }
+}
+
+/// 序列化好的 info JSON（worker 用它做逐拍字符串比对与扇出）
+fn host_info_json(s: &Snapshot, metrics: &[String]) -> Option<String> {
+    serde_json::to_string(&build_host_info(s, metrics)).ok()
+}
+
 /* ---------------- BLE 帧格式（纯函数，文档口径见 docs/推送协议.md） ---------------- */
+
 
 /// BLE 单帧数据段上限：2 字节帧头 + 18 字节 = 20 字节，落在最小协商 MTU（23−3）之内。
 pub const BLE_FRAME_DATA: usize = 18;
@@ -566,6 +824,20 @@ pub struct PushHub {
     app_running: Arc<AtomicBool>,
     inner: Mutex<HubInner>,
     status: Mutex<Arc<Mutex<PushStatus>>>,
+    /// 移动端布局消息槽（Hub 级、跨 worker 代际共享）：手机 / 平板两种设备
+    /// 形态各一份序列化好的 schema 2 JSON。`set_layout` 换内容并 bump 世代号，
+    /// worker 每拍比对世代决定要不要（重）发——连接建立后必达、每次变更立即全量重发。
+    layout: Arc<Mutex<LayoutSlot>>,
+}
+
+/// 布局消息槽。世代号从 1 起（0 = 从未设置过），worker 初值取 0，
+/// 因此每一代 worker 的首个连接都会拿到当前布局。任一设备形态变化都 bump
+/// 同一个世代号——worker 的触发逻辑不区分是谁变了，重发就两条一起发。
+#[derive(Default)]
+struct LayoutSlot {
+    gen: u64,
+    phone: Option<String>,
+    pad: Option<String>,
 }
 
 struct HubInner {
@@ -587,7 +859,26 @@ impl PushHub {
                 _gen: AtomicU64::new(0),
             }),
             status: Mutex::new(Arc::new(Mutex::new(PushStatus::default()))),
+            layout: Arc::new(Mutex::new(LayoutSlot::default())),
         }
+    }
+
+    /// 更新某一设备形态的布局消息（`device` 取 `mobile_layout::DEVICE_PHONE` /
+    /// `DEVICE_PAD`，未知串按手机处理；None = 清空，如布局组件被全删时也照发空表）。
+    /// 内容没变就直接跳过——前端每次编辑落位都会调一次，拖回原位的情形不必重发。
+    pub fn set_layout(&self, device: &str, msg: Option<String>) {
+        let device = crate::mobile_layout::canonical_device(device);
+        let mut slot = self.layout.lock().unwrap_or_else(|e| e.into_inner());
+        let slot_msg = if device == crate::mobile_layout::DEVICE_PAD {
+            &mut slot.pad
+        } else {
+            &mut slot.phone
+        };
+        if *slot_msg == msg {
+            return;
+        }
+        *slot_msg = msg;
+        slot.gen += 1;
     }
 
     /// 按配置重启推送子系统：先停旧 worker，`enabled` 时起新的一代。
@@ -620,6 +911,7 @@ impl PushHub {
             status: fresh,
             released,
             prev_released,
+            layout: self.layout.clone(),
         };
         std::thread::Builder::new()
             .name("pd-push".into())
@@ -645,6 +937,8 @@ struct Worker {
     released: Arc<Released>,
     /// 上一代的退场信号：bind 之前先等它放开端口（见 [`Released`]）
     prev_released: Option<Arc<Released>>,
+    /// 移动端布局消息槽（Hub 级共享，跨代不换）
+    layout: Arc<Mutex<LayoutSlot>>,
 }
 
 impl Worker {
@@ -694,6 +988,12 @@ impl Worker {
         let mut waited = 0u32;
         // 新客户端连上立即推一拍，不必干等一个间隔
         let mut force_push = false;
+        // 布局消息的发送状态：已发到哪个世代 + 上一拍的 BLE 订阅数（0→N 判「新连接」）
+        let mut layout_seen = 0u64;
+        let mut prev_ble_subs = 0usize;
+        // 静态信息（schema 3）的发送状态：最近一次发出的内容 + 心跳计数
+        let mut last_info: Option<String> = None;
+        let mut info_ticks: u32 = 0;
         loop {
             if !self.alive() {
                 break;
@@ -736,16 +1036,56 @@ impl Worker {
                 }
             }
 
+            // 布局消息（schema 2，移动端布局，手机/平板各一条）：连接建立后必达、
+            // 每次变更立即全量重发。走独立判断、不受推送间隔节流（100ms 一查）；
+            // BLE 订阅是异步事件（无 accept 路径），用订阅数 0→N 当「新连接」。
+            // BLE 通道容量 2 且 try_send 丢满不排队——两条布局背靠背推送时若与
+            // 一拍载荷挤在一起可能被无声丢弃，由「App 端按设备独立持久化 +
+            // 每次编辑都重发」自愈，不加队列。
+            let ble_subs_now = ble_server
+                .as_ref()
+                .map(ble::BleServer::subscribers)
+                .unwrap_or(0);
+            if !clients.is_empty() || !ws_clients.is_empty() || ble_subs_now > 0 {
+                let (send_any, outgoing) = {
+                    let slot = self.layout.lock().unwrap_or_else(|e| e.into_inner());
+                    let changed = slot.gen != layout_seen;
+                    let ble_joined = ble_subs_now > 0 && prev_ble_subs == 0;
+                    if changed || ble_joined || force_push {
+                        layout_seen = slot.gen;
+                        (true, (slot.pad.clone(), slot.phone.clone()))
+                    } else {
+                        (false, (None, None))
+                    }
+                };
+                // 静态信息（schema 3）先于两条布局消息：App 要先拿到型号 / 逐卷容量
+                // 这类静态数据，随后渲染布局卡片才不缺行。触发点与布局同款
+                // （新客户端连上 / 布局变更），平时不拍拍重发——变化检测在数据拍里做。
+                if send_any {
+                    if let Some(info) = host_info_json(&self.sampler.latest(), &self.cfg.metrics)
+                    {
+                        fanout_text(&mut clients, &mut ws_clients, &ble_server, &info);
+                        last_info = Some(info);
+                    }
+                }
+                // 先 pad 后 phone：旧版 App 不认 device 字段，两条都会应用、
+                // 后者覆盖前者——最终停在 phone，与单布局时代行为一致
+                if let Some(msg) = outgoing.0 {
+                    fanout_text(&mut clients, &mut ws_clients, &ble_server, &msg);
+                }
+                if let Some(msg) = outgoing.1 {
+                    fanout_text(&mut clients, &mut ws_clients, &ble_server, &msg);
+                }
+            }
+            prev_ble_subs = ble_subs_now;
+
             if !force_push && waited < interval {
                 continue;
             }
             waited = 0;
             force_push = false;
 
-            let ble_subs = ble_server
-                .as_ref()
-                .map(ble::BleServer::subscribers)
-                .unwrap_or(0);
+            let ble_subs = ble_subs_now;
             if clients.is_empty() && ws_clients.is_empty() && ble_subs == 0 {
                 // 无连接不干活；顺带把状态里的客户端数清零（上次连接可能刚断）
                 let mut st = self.lock_status();
@@ -787,6 +1127,18 @@ impl Worker {
                 b.push(&ble_bytes);
             }
 
+            // 静态信息（schema 3）的变化重发 + 心跳兜底。GiB / 整数 Wh 粒度让
+            // 「内容变了」极少触发；心跳是为 BLE 准的——连接突发时容量 2 的通道
+            // 可能无声丢掉 info，它没有布局消息「编辑即重发」的自愈路径。
+            if let Some(info) = host_info_json(&snap, &self.cfg.metrics) {
+                info_ticks = info_ticks.saturating_add(1);
+                if info_ticks >= INFO_HEARTBEAT_TICKS || last_info.as_deref() != Some(&info) {
+                    fanout_text(&mut clients, &mut ws_clients, &ble_server, &info);
+                    last_info = Some(info);
+                    info_ticks = 0;
+                }
+            }
+
             let mut st = self.lock_status();
             st.tcp_clients = clients.len() + ws_clients.len();
             st.last_push_ms = now_ms();
@@ -799,6 +1151,38 @@ impl Worker {
         drop(ble_server);
         // 这里之后 `_release_guard` 才 drop 并置位退场信号——「端口已放开」的
         // 判据就建立在「显式 drop(listener) 在它之前」这个顺序上，别调整。
+    }
+}
+
+/// 三路扇出一条已序列化好的文本消息（布局消息用）：裸 TCP 补换行成 NDJSON 行、
+/// WS 原文文本消息（不带换行）、BLE 交 `BleServer` 内部分帧。掉线剔除规则与
+/// 每拍载荷的扇出完全一致。
+fn fanout_text(
+    clients: &mut Vec<TcpStream>,
+    ws_clients: &mut Vec<ws::WsClient>,
+    ble_server: &Option<ble::BleServer>,
+    msg: &str,
+) {
+    let mut line = msg.to_string();
+    line.push('\n');
+    let mut i = 0;
+    while i < clients.len() {
+        if clients[i].write_all(line.as_bytes()).is_ok() {
+            i += 1;
+        } else {
+            clients.remove(i);
+        }
+    }
+    let mut i = 0;
+    while i < ws_clients.len() {
+        if ws_clients[i].send(msg) {
+            i += 1;
+        } else {
+            ws_clients.remove(i);
+        }
+    }
+    if let Some(b) = ble_server {
+        b.push(msg.as_bytes());
     }
 }
 
@@ -898,9 +1282,30 @@ mod tests {
         s.ts_ms = 1_729_000_000_000;
         s.sample_interval_ms = 1000;
         s.system.host_name = Some("desktop".into());
+        s.cpu.brand = "12th Gen Intel(R) Core(TM) i7-12700H".into();
         s.cpu.usage_total = 23.5;
+        s.cpu.physical_cores = 14;
+        s.cpu.logical_cores = 20;
         s.cpu.freq_mhz = 2900;
         s.cpu.freq_live = true;
+        s.cpu.per_core = vec![
+            12.0, 45.5, 100.0, 3.2, 8.0, 27.5, 66.6, 0.4, 12.0, 45.5, 100.0, 3.2, 8.0, 27.5, 66.6,
+            0.4,
+        ];
+        s.cpu.top_cpu = vec![
+            crate::model::ProcInfo {
+                pid: 1,
+                name: "pulse-deck.exe".into(),
+                cpu_usage: 12.5,
+                memory_bytes: 36 * 1024 * 1024,
+            },
+            crate::model::ProcInfo {
+                pid: 2,
+                name: "一个名字特别长的进程名字会被截断.exe".into(),
+                cpu_usage: 3.3,
+                memory_bytes: 500 * 1024 * 1024,
+            },
+        ];
         s.thermal.cpu_temp_c = Some(61.5);
         s.thermal.cpu_power_w = Some(12.25);
         s.cpu.fan_rpm = Some(2400.0);
@@ -922,6 +1327,7 @@ mod tests {
                 name: "NVIDIA GeForce RTX 3060 Laptop GPU".into(),
                 usage_pct: Some(37.0),
                 mem_pct: Some(44.0),
+                mem_total_bytes: 6 * GIB,
                 temp_c: Some(66.0),
                 power_w: Some(75.5),
                 source: "nvml".into(),
@@ -932,15 +1338,26 @@ mod tests {
         s.gpu.mem_pct = Some(44.0);
         s.gpu.temp_c = Some(66.0);
         s.gpu.power_w = Some(75.5);
+        s.gpu.mem_total_bytes = 6 * GIB;
         s.battery.has_battery = true;
         s.battery.charging = true;
         s.battery.ac_online = true;
         s.battery.percent = Some(82.0);
         s.battery.charge_rate_w = Some(45.2);
         s.battery.discharge_rate_w = None;
+        s.battery.remaining_wh = Some(67.3);
+        s.battery.full_charge_wh = Some(82.1);
+        s.battery.seconds_to_full = Some(3_600);
         s.net.rx_bytes_per_sec = 1_234_567;
         s.net.tx_bytes_per_sec = 98_765;
+        // 累计取整 MiB 后的期望值要能对上：12_582_912_000 B = 12000 MiB、2_097_152_000 B = 2000 MiB
+        s.net.total_received = 12_000 * MIB;
+        s.net.total_transmitted = 2_000 * MIB;
         s.disks = vec![crate::model::DiskInfo {
+            mount_point: "C:\\".into(),
+            total_bytes: 932 * GIB,
+            used_bytes: 775 * GIB,
+            usage_pct: 83.1,
             read_bytes_per_sec: 300_000,
             write_bytes_per_sec: 1_200_000,
             ..Default::default()
@@ -980,8 +1397,60 @@ mod tests {
         assert_eq!(v["gpu"]["powerW"], 75.5);
         assert_eq!(v["bat"]["rateW"], 45.2);
         assert!(v["bat"]["charging"].as_bool().unwrap());
+        assert_eq!(v["bat"]["secondsToFull"], 3_600_u64);
+        assert!(
+            v["bat"]["secondsToEmpty"].is_null(),
+            "充电中不给剩余续航"
+        );
         assert_eq!(v["net"]["downBps"], 1_234_567_u64);
+        assert_eq!(v["net"]["totalReceivedMiB"], 12_000_u64);
+        assert_eq!(v["net"]["totalTransmittedMiB"], 2_000_u64);
         assert_eq!(v["disk"]["readBps"], 300_000_u64);
+    }
+
+    /// cores 组：整数数组（round 而非 truncate——45.5 → 46）；procs 组：top N、
+    /// 名字按**字符**截 16 个（多字节字符不能拦腰截断成非法 UTF-8）
+    #[test]
+    fn payload_cores_and_procs_shape() {
+        let s = sample_snapshot();
+        let all = build_payload(
+            &s,
+            &METRIC_KEYS.iter().map(|k| k.to_string()).collect::<Vec<_>>(),
+        );
+        let v: serde_json::Value = serde_json::to_value(&all).unwrap();
+        assert_eq!(v["cores"]["load"].as_array().unwrap().len(), 16);
+        assert_eq!(v["cores"]["load"][0], 12);
+        assert_eq!(v["cores"]["load"][1], 46);
+        assert_eq!(v["cores"]["load"][2], 100);
+        let list = v["procs"]["list"].as_array().unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0]["name"], "pulse-deck.exe");
+        assert_eq!(list[0]["cpuPct"], 12.5);
+        assert_eq!(list[0]["memMiB"], 36);
+        let long_name = list[1]["name"].as_str().unwrap();
+        assert_eq!(long_name.chars().count(), 16, "名字截到 16 个字符");
+        assert_eq!(list[1]["memMiB"], 500, "内存换算成 MiB 取整");
+    }
+
+    /// per_core 还是空的（首拍等场景）→ cores 组整组缺席，不出现空组
+    #[test]
+    fn payload_omits_empty_cores() {
+        let s = Snapshot::default();
+        let p = build_payload(&s, &["cores".to_string()]);
+        assert!(p.cores.is_none());
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(!json.contains("\"cores\""));
+    }
+
+    #[test]
+    fn truncate_chars_keeps_valid_utf8() {
+        assert_eq!(truncate_chars("short", 16), "short");
+        let n = "名字截断必须按字符".to_string();
+        assert_eq!(truncate_chars(&n, 4), "名字截断");
+        // 截断点落在多字节字符中间也不产生非法 UTF-8（按字符取天然保证）
+        let mixed = "aé漢字b";
+        let cut = truncate_chars(mixed, 3);
+        assert_eq!(cut, "aé漢");
     }
 
     /// 蓝牙按 20 字节帧切发，单拍载荷必须有预算上限——加字段时这里是闸门
@@ -1024,6 +1493,122 @@ mod tests {
         s.battery.discharge_rate_w = Some(30.1);
         let p = build_payload(&s, &["bat".to_string()]);
         assert_eq!(p.bat.unwrap().rate_w, Some(30.1));
+    }
+
+    /// 已接入未充电（满电续充 / 养护模式）如实给 0：与 PC 电源卡同口径，
+    /// 否则 App 端拿到 None 会把「电池」明细行整行隐藏，和桌面预览对不上
+    #[test]
+    fn payload_battery_rate_zero_when_ac_idle() {
+        let mut s = sample_snapshot();
+        s.battery.charging = false;
+        s.battery.ac_online = true;
+        s.battery.charge_rate_w = None;
+        s.battery.discharge_rate_w = None;
+        let p = build_payload(&s, &["bat".to_string()]);
+        assert_eq!(p.bat.unwrap().rate_w, Some(0.0));
+    }
+
+    /* ---------- 静态信息消息（schema 3） ---------- */
+
+    /// info 消息的形状：schema/type、截断（brand 36 / 挂载点 16 / 其它显卡 16）、
+    /// 取整（整数 Wh / GiB / 整数百分比）、逐卷排序与 cap、其它显卡 cap
+    #[test]
+    fn host_info_shape_caps_and_rounding() {
+        let mut s = sample_snapshot();
+        s.gpu.devices.push(crate::model::GpuDevice {
+            index: 2,
+            name: "AMD Radeon RX 6800 Extra Long Name".into(),
+            ..Default::default()
+        });
+        s.disks = ["A:\\", "F:\\", "B:\\", "E:\\", "C:\\", "D:\\"]
+            .iter()
+            .enumerate()
+            .map(|(i, m)| crate::model::DiskInfo {
+                mount_point: (*m).to_string(),
+                total_bytes: 500 * GIB + i as u64 * GIB,
+                used_bytes: 100 * GIB,
+                usage_pct: 20.4 + i as f32,
+                ..Default::default()
+            })
+            .collect();
+        let all: Vec<String> = METRIC_KEYS.iter().map(|k| k.to_string()).collect();
+        let v: serde_json::Value = serde_json::to_value(build_host_info(&s, &all)).unwrap();
+
+        assert_eq!(v["schema"], 3);
+        assert_eq!(v["type"], "info");
+        assert_eq!(
+            v["cpu"]["brand"].as_str().unwrap().chars().count(),
+            INFO_BRAND_CHARS,
+            "brand 截到 {} 字符",
+            INFO_BRAND_CHARS
+        );
+        assert_eq!(v["cpu"]["physicalCores"], 14);
+        assert_eq!(v["cpu"]["logicalCores"], 20);
+        // 主卡（RTX 3060）显存总量；others = Intel 核显 + AMD，各截 16 字符
+        assert_eq!(v["gpu"]["memTotalBytes"], 6 * GIB);
+        let others = v["gpu"]["others"].as_array().unwrap();
+        assert_eq!(others.len(), INFO_OTHERS_CAP);
+        assert_eq!(others[0].as_str().unwrap().chars().count(), 16);
+        // Wh 取整
+        assert_eq!(v["bat"]["remainingWh"], 67);
+        assert_eq!(v["bat"]["fullChargeWh"], 82);
+        // 逐卷：按挂载点排序、cap 4、pct/GiB 取整
+        let vols = v["disk"]["volumes"].as_array().unwrap();
+        assert_eq!(vols.len(), INFO_VOLUME_CAP);
+        assert_eq!(vols[0]["mount"], "A:\\");
+        assert_eq!(vols[3]["mount"], "D:\\");
+        assert_eq!(vols[0]["pct"], 20);
+        assert_eq!(vols[0]["usedGiB"], 100);
+        assert_eq!(vols[0]["totalGiB"], 500);
+    }
+
+    /// info 的组跟随 metrics 勾选：没勾的组整组缺席（与每拍载荷同款语义）
+    #[test]
+    fn host_info_respects_metric_selection() {
+        let s = sample_snapshot();
+        let only_mem = build_host_info(&s, &["mem".to_string()]);
+        let v: serde_json::Value = serde_json::to_value(only_mem).unwrap();
+        assert!(v["cpu"].is_null());
+        assert!(v["gpu"].is_null());
+        assert!(v["bat"].is_null());
+        assert!(v["disk"].is_null());
+        // 无电池 / 无 GPU 的机器同样不出空组
+        let empty = Snapshot::default();
+        let v2: serde_json::Value =
+            serde_json::to_value(build_host_info(&empty, &["gpu".into(), "bat".into()])).unwrap();
+        assert!(v2["gpu"].is_null());
+        assert!(v2["bat"].is_null());
+        assert_eq!(v2["schema"], 3, "没有组时也仍是合法的 info 消息");
+    }
+
+    /// 最坏情况每拍载荷闸门：全组 + 5 条 16 字符进程 + 24 核 + 15 字符主机名
+    /// （Windows NetBIOS 上限）+ 处处最长数字，仍必须 <1KB（BLE 帧数预算）。
+    /// 预算装不下而砍掉的：内存「可用」（sysinfo 口径 total−used 即精确值，
+    /// 设备端自己算）、网络累计的字节精度（MiB 取整）——加字段时这里是闸门，超了继续砍。
+    #[test]
+    fn payload_worst_case_stays_under_ble_budget() {
+        let mut s = sample_snapshot();
+        s.system.host_name = Some("workstation-host".into());
+        s.cpu.per_core = vec![100.0; 24];
+        s.cpu.top_cpu = (0..5)
+            .map(|i| crate::model::ProcInfo {
+                pid: 10_000 + i,
+                name: "procname-16-chars!".into(),
+                cpu_usage: 99.9,
+                memory_bytes: 2_048 * 1024 * 1024,
+            })
+            .collect();
+        s.memory.total_bytes = 137_438_953_472;
+        s.memory.used_bytes = 68_719_476_736;
+        s.net.total_received = 123_456_789_012_345;
+        s.net.total_transmitted = 12_345_678_901_234;
+        let all: Vec<String> = METRIC_KEYS.iter().map(|k| k.to_string()).collect();
+        let json = serde_json::to_string(&build_payload(&s, &all)).unwrap();
+        assert!(
+            json.len() < 1024,
+            "最坏载荷 {} 字节，超出 1KB 预算（BLE 帧数会失控）",
+            json.len()
+        );
     }
 
     /* ---------- BLE 帧 ---------- */
@@ -1071,9 +1656,10 @@ mod tests {
     #[test]
     fn metric_and_transport_keys_exist_in_settings_html() {
         let html = include_str!("../../../index.html");
+        // 按字符截窗口（HTML 里有中文，字节切片会切进多字节字符中间）
         let zone = |anchor: &str| {
             let start = html.find(anchor).unwrap_or(usize::MAX);
-            &html[start..(start + 1400).min(html.len())]
+            html[start..].chars().take(1400).collect::<String>()
         };
         let metrics_zone = zone("id=\"push-metrics\"");
         for key in METRIC_KEYS {
@@ -1217,7 +1803,8 @@ mod tests {
         let port = wait_listening(&hub);
 
         // 裸 TCP 客户端连上后一言不发（NDJSON 客户端的常态，也是嗅探判定的前提）；
-        // 首拍会被 250ms 判定窗口延后，5s 读超时内稳过
+        // 首拍会被 250ms 判定窗口延后，5s 读超时内稳过。连接后先到的可能是
+        // 静态信息 / 布局消息（schema 2/3）——读到第一条数据拍（schema 1）为止
         let stream = std::net::TcpStream::connect(("127.0.0.1", port)).expect("连上推送服务");
         stream
             .set_read_timeout(Some(Duration::from_secs(5)))
@@ -1225,7 +1812,13 @@ mod tests {
         let mut reader = std::io::BufReader::new(stream);
 
         let mut line = String::new();
-        reader.read_line(&mut line).expect("读到一行推送");
+        loop {
+            line.clear();
+            reader.read_line(&mut line).expect("读到一行推送");
+            if line.contains("\"schema\":1") {
+                break;
+            }
+        }
         assert!(line.ends_with('\n'), "NDJSON 帧以换行结尾");
         let v: serde_json::Value = serde_json::from_str(line.trim()).expect("推送行是合法 JSON");
         assert_eq!(v["schema"], 1);
@@ -1257,7 +1850,14 @@ mod tests {
             tungstenite::client(format!("ws://127.0.0.1:{port}/"), stream).expect("WS 握手成功");
         let _ = ws.get_ref().set_read_timeout(Some(Duration::from_secs(5)));
 
-        let text = ws.read().expect("收到一条推送").into_text().unwrap().to_string();
+        // 首条可能是静态信息 / 布局消息（schema 2/3）——读到第一条数据拍为止
+        let mut text = String::new();
+        loop {
+            text = ws.read().expect("收到一条推送").into_text().unwrap().to_string();
+            if text.contains("\"schema\":1") {
+                break;
+            }
+        }
         assert!(!text.contains('\n'), "WS 文本消息不带换行");
         let v: serde_json::Value = serde_json::from_str(&text).expect("推送是合法 JSON");
         assert_eq!(v["schema"], 1);
@@ -1292,9 +1892,22 @@ mod tests {
         raw.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         let mut reader = std::io::BufReader::new(raw);
 
+        // 首行可能是静态信息（schema 3）——跳过它取第一条数据拍
         let mut line = String::new();
-        reader.read_line(&mut line).expect("裸 TCP 收到 NDJSON 行");
-        let text = ws.read().expect("WS 收到文本消息").into_text().unwrap().to_string();
+        loop {
+            line.clear();
+            reader.read_line(&mut line).expect("裸 TCP 收到 NDJSON 行");
+            if line.contains("\"schema\":1") {
+                break;
+            }
+        }
+        let mut text = String::new();
+        loop {
+            text = ws.read().expect("WS 收到文本消息").into_text().unwrap().to_string();
+            if text.contains("\"schema\":1") {
+                break;
+            }
+        }
 
         let v_line: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
         let v_ws: serde_json::Value = serde_json::from_str(&text).unwrap();
@@ -1303,6 +1916,143 @@ mod tests {
         assert!(v_ws["cpu"].is_object(), "WS 收到的也是同一份载荷");
 
         wait_clients(&hub, 2);
+
+        running.store(false, Ordering::Relaxed);
+        hub.sync(&PushConfig::default());
+    }
+
+    /// 布局消息（schema 2）的端到端：连接建立后两种设备形态（pad/phone）各必达
+    /// 一条且 pad 在前（旧版 App 不认 device 字段，后者覆盖前者最终停在 phone）、
+    /// `set_layout` 变更后在读超时窗口内重发新全量。TCP 侧验证（WS 走同一
+    /// 个扇出函数、BLE 走同一条 push 路径，无线电部分按仓库惯例真机验收）。
+    #[test]
+    fn layout_message_reaches_client_and_resends_on_change() {
+        use std::io::BufRead;
+
+        let sampler = Arc::new(crate::sampler::Sampler::new());
+        let running = Arc::new(AtomicBool::new(true));
+        let hub = PushHub::new(sampler, running.clone());
+        hub.set_layout(
+            crate::mobile_layout::DEVICE_PAD,
+            Some(
+                r#"{"schema":2,"type":"layout","device":"pad","cols":6,"widgets":[{"type":"cpu","x":0,"y":0,"w":3,"h":3}]}"#
+                    .into(),
+            ),
+        );
+        hub.set_layout(
+            crate::mobile_layout::DEVICE_PHONE,
+            Some(
+                r#"{"schema":2,"type":"layout","device":"phone","cols":4,"widgets":[{"type":"cpu","x":0,"y":0,"w":2,"h":3}]}"#
+                    .into(),
+            ),
+        );
+        hub.sync(&e2e_config());
+        let port = wait_listening(&hub);
+
+        let stream = std::net::TcpStream::connect(("127.0.0.1", port)).expect("连上推送服务");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut reader = std::io::BufReader::new(stream);
+
+        // 连接后前几行里必须同时见到两条布局消息（pad 在 phone 前）与数据拍
+        // （与数据拍的相对顺序不保证：布局走 100ms 快查、首拍还带 250ms 嗅探窗口）
+        let (mut saw_pad, mut saw_phone, mut phone_after_pad, mut saw_tick) =
+            (false, false, false, false);
+        for _ in 0..8 {
+            let mut line = String::new();
+            reader.read_line(&mut line).expect("读到一行");
+            if line.contains("\"device\":\"pad\"") {
+                saw_pad = true;
+                assert!(line.contains("\"cols\":6"), "pad 布局带自己的列数");
+            } else if line.contains("\"device\":\"phone\"") {
+                saw_phone = true;
+                phone_after_pad = saw_pad;
+            } else if line.contains("\"schema\":1") {
+                saw_tick = true;
+            }
+            if saw_pad && saw_phone && saw_tick {
+                break;
+            }
+        }
+        assert!(saw_pad, "连接建立后必达 pad 布局消息");
+        assert!(saw_phone, "连接建立后必达 phone 布局消息");
+        assert!(phone_after_pad, "phone 布局必须在 pad 之后（旧 App 兼容顺序）");
+        assert!(saw_tick, "数据拍照常推送");
+
+        // 变更即重发：换了内容（同内容会被跳过）后读超时窗口内必须再收到。
+        // 改任一设备都会两条一起重发，这里改 phone 验证新内容到达
+        hub.set_layout(
+            crate::mobile_layout::DEVICE_PHONE,
+            Some(
+                r#"{"schema":2,"type":"layout","device":"phone","cols":4,"widgets":[]}"#
+                    .into(),
+            ),
+        );
+        let mut got_new = false;
+        for _ in 0..10 {
+            let mut line = String::new();
+            reader.read_line(&mut line).expect("读到一行");
+            if line.contains("\"device\":\"phone\"") && line.contains("\"widgets\":[]") {
+                got_new = true;
+                break;
+            }
+        }
+        assert!(got_new, "布局变更后必须重发全量");
+
+        running.store(false, Ordering::Relaxed);
+        hub.sync(&PushConfig::default());
+    }
+
+    /// 静态信息（schema 3）端到端：连接建立后必达，且**先于**两条布局消息
+    /// （App 要先拿到型号 / 逐卷容量这类静态数据，随后渲染布局卡片才不缺行）。
+    #[test]
+    fn info_message_precedes_layouts_on_connect() {
+        use std::io::BufRead;
+
+        let sampler = Arc::new(crate::sampler::Sampler::new());
+        let running = Arc::new(AtomicBool::new(true));
+        let hub = PushHub::new(sampler, running.clone());
+        hub.set_layout(
+            crate::mobile_layout::DEVICE_PAD,
+            Some(r#"{"schema":2,"type":"layout","device":"pad","cols":6,"widgets":[]}"#.into()),
+        );
+        hub.set_layout(
+            crate::mobile_layout::DEVICE_PHONE,
+            Some(r#"{"schema":2,"type":"layout","device":"phone","cols":4,"widgets":[]}"#.into()),
+        );
+        hub.sync(&e2e_config());
+        let port = wait_listening(&hub);
+
+        let stream = std::net::TcpStream::connect(("127.0.0.1", port)).expect("连上推送服务");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut reader = std::io::BufReader::new(stream);
+
+        // 连接后前几行内记下各自出现的行序，info 必须排在两条布局之前
+        let (mut info_at, mut pad_at, mut phone_at) = (usize::MAX, usize::MAX, usize::MAX);
+        for i in 0..8 {
+            let mut line = String::new();
+            reader.read_line(&mut line).expect("读到一行");
+            if line.contains("\"schema\":3") {
+                info_at = info_at.min(i);
+            } else if line.contains("\"device\":\"pad\"") {
+                pad_at = pad_at.min(i);
+            } else if line.contains("\"device\":\"phone\"") {
+                phone_at = phone_at.min(i);
+            }
+            if info_at != usize::MAX && pad_at != usize::MAX && phone_at != usize::MAX {
+                break;
+            }
+        }
+        assert_ne!(info_at, usize::MAX, "连接建立后必达 info 消息");
+        assert_ne!(pad_at, usize::MAX);
+        assert_ne!(phone_at, usize::MAX);
+        assert!(
+            info_at < pad_at && info_at < phone_at,
+            "info 必须先于两条布局消息（实际行序 info={info_at} pad={pad_at} phone={phone_at}）"
+        );
 
         running.store(false, Ordering::Relaxed);
         hub.sync(&PushConfig::default());

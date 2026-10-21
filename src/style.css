@@ -635,7 +635,10 @@ select option:hover {
   /* 关键 1：允许 flex 子项收缩到内容高度以下，overflow-y 才能产生内部滚动条 */
   min-height: 0;
   display: grid;
-  grid-template-columns: repeat(12, minmax(0, 1fr));
+  /* 列数由容器上的 --cols 决定（#grid 是 12、.grid-mobile 是 4、.grid-pad 是 6），
+     与 JS 侧 layout.js 的 DESK.cols / MOBILE_PHONE_FLOW.cols / MOBILE_PAD_FLOW.cols
+     是同一组值，改必须两处一起改 */
+  grid-template-columns: repeat(var(--cols, 12), minmax(0, 1fr));
   /* 关键 2：行高是固定单元。小组件的位置 / 大小都按「列×行」网格坐标由 JS 显式放置
      （modules/dashboard.js 写 grid-column / grid-row），行不随内容伸缩——
      卡片内容自己负责在小尺寸下滚动（列表 overflow / 图表弹性高度） */
@@ -644,6 +647,26 @@ select option:hover {
   gap: var(--gap);
   overflow-y: auto;
   padding-bottom: 6px;
+}
+
+/* 移动 App 布局预览网格（预览框内）：手机 4 列 / 平板 6 列，
+   其余网格行为与桌面网格一致。行单元 92px 见 modules/layout.js 的
+   MOBILE_PHONE_FLOW.rowUnit（新卡的环 + 明细形态装不进 44px 的行）。
+   这里没有 gap：卡片间距由 .mob-card 的 8px 右边距 / 9px 下边距画，
+   与 App 端 .card 的固定 px 边距是同一套（百分比宽度 + 固定 px 边距
+   在凑满一行时不会压到 100%，双端行为一致）。 */
+.grid-mobile {
+  --cols: 4;
+  --row-unit: 92px;
+  gap: 0;
+  flex: 1 1 auto;
+}
+
+.grid-pad {
+  --cols: 6;
+  --row-unit: 92px;
+  gap: 0;
+  flex: 1 1 auto;
 }
 
 .card {
@@ -1262,6 +1285,809 @@ select option:hover {
   text-align: center;
   color: var(--text-faint);
   font-size: 12px;
+}
+
+/* ---------------- 移动端布局预览（编辑布局 → 手机/平板目标） ----------------
+ * 只在 body.editing + body.edit-mobile（phone / pad 之一）同时挂上时出现
+ * （editmode.js 的目标切换）；桌面网格同时隐藏，再由 body.edit-phone /
+ * body.edit-pad 挑显示哪个预览框。预览框是给用户的 WYSIWYG 预览——
+ * 卡内呈现复刻 App 端，**比例也复刻**：两端都是横屏（App 的 pages.json
+ * 里页面锁了 pageOrientation=landscape）。 */
+
+.phone-wrap {
+  display: none;
+}
+
+body.editing.edit-mobile .phone-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 8px 0 16px;
+  overflow-y: auto;
+}
+
+body.editing.edit-mobile #grid {
+  display: none;
+}
+
+/* 横屏预览框：App 端 pages.json 里页面锁了 landscape（Android 真机横屏），
+   WYSIWYG 预览必须同比例——手机 680×382（16:9）、平板 880×550（16:10）。
+   高度必须显式给：.phone-wrap 是 flex 列容器，只写 aspect-ratio 时
+   flex-basis:auto 会按内容（整张网格）算高，比例被内容压掉（实测 680×675）。
+   窗口不够高时由 max-height 夹住，网格在框内滚动，不影响编辑。 */
+.phone-frame {
+  position: relative;
+  flex: 0 0 auto;
+  width: 680px;
+  height: 382px;
+  max-width: 100%;
+  max-height: calc(100vh - 220px);
+  display: flex;
+  flex-direction: column;
+  border: 2px solid rgba(127, 160, 255, 0.45);
+  border-radius: 28px;
+  /* 与 App 端 .page 同色同内距：预览里看到的是设备页面的真实底色 */
+  padding: 12px;
+  background: #0f1319;
+}
+
+/* 平板预览框：默认藏，只在 body.edit-pad 时顶替手机框显示 */
+.frame-pad {
+  display: none;
+  width: 880px;
+  height: 550px;
+}
+
+body.editing.edit-pad .frame-phone {
+  display: none;
+}
+
+body.editing.edit-pad .frame-pad {
+  display: flex;
+}
+
+/* 横屏时刘海在左侧（竖屏那条顶部横杠在横屏里没有意义）；平板没有刘海 */
+.phone-notch {
+  position: absolute;
+  left: 3px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 5px;
+  height: 64px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.frame-pad .phone-notch {
+  display: none;
+}
+
+.phone-note {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-faint);
+  text-align: center;
+}
+
+/* 编辑条上的目标切换（桌面 | 手机 | 平板）分段按钮 */
+.editbar-target {
+  display: flex;
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.editbar-target-btn {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 11.5px;
+  padding: 4px 12px;
+  cursor: pointer;
+}
+
+.editbar-target-btn + .editbar-target-btn {
+  border-left: 1px solid var(--border);
+}
+
+.editbar-target-btn.active {
+  background: rgba(111, 168, 255, 0.16);
+  color: var(--text);
+}
+
+/* 模式分段按钮（流式 | 固定一屏）：只在手机 / 平板目标时出现；
+ * 复用桌面 / 手机 / 平板那套分段按钮的边框与选中态。 */
+.editbar-mode {
+  display: none;
+}
+
+body.editing.edit-mobile .editbar-mode {
+  display: flex;
+}
+
+/* 固定一屏已满 / 调整被回滚时的短提示，2.6s 后自动淡出 */
+.editbar-note {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 260px;
+  font-size: 11px;
+  color: #ffb36b;
+  opacity: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: opacity 0.16s ease;
+}
+
+.editbar-note.show {
+  opacity: 1;
+}
+
+/* ---------------- 固定一屏（grid）与流式预览（flow-view） ----------------
+ * 固定一屏：手机 4 行 / 平板 6 行，行高由预览框可用高度等分（editmode 的
+ * metrics 用 grid.clientHeight / rows），与 App 端按 rows 的百分比定位同比例。
+ * 流式预览：把显式网格坐标换成自动行高，卡片高度随内容增长，只读。 */
+
+.grid-fixed {
+  display: none;
+  grid-auto-rows: 0;
+  grid-template-rows: repeat(var(--rows, 4), minmax(0, 1fr));
+  overflow: hidden;
+  /* 桌面网格的 6px 底部呼吸空间不属于一屏布局：留下会让 1fr 行高少 1.5px，
+   * 卡片高度与 App 的 rows 百分比几何对不上 */
+  padding-bottom: 0;
+}
+
+.grid-fixed-phone {
+  --cols: 4;
+  --rows: 4;
+}
+
+.grid-fixed-pad {
+  --cols: 6;
+  --rows: 6;
+}
+
+/* 手机固定一屏：App 端横屏按 4 行均分后单行只有 ~65px，h2 卡装不下 80px 的环
+ * （overflow:hidden 会把环底裁掉）。App 里手机固定一屏把环缩到 64px、平板保持
+ * 80px —— 预览同步缩，保持所见即所得。改这里要同步 App 的
+ * .cards-grid.cards-phone .card-compact 一组。 */
+#grid-mobile-grid .mob-ring {
+  width: 64px;
+  height: 64px;
+  margin: 2px auto 6px;
+}
+
+#grid-mobile-grid .mob-ring-track {
+  border-width: 5px;
+}
+
+#grid-mobile-grid .mob-ring-half i {
+  border-width: 5px;
+}
+
+#grid-mobile-grid .mob-ring-center .mob-big {
+  font-size: 17px;
+}
+
+#grid-mobile-grid .mob-ring-label {
+  font-size: 9px;
+  margin-top: 1px;
+}
+
+body.edit-grid #grid-mobile,
+body.edit-grid #grid-pad {
+  display: none;
+}
+
+body.edit-grid #grid-mobile-grid,
+body.edit-grid #grid-pad-grid {
+  display: grid;
+}
+
+.grid-mobile.flow-view,
+.grid-pad.flow-view {
+  grid-auto-rows: max-content;
+  align-content: start;
+  overflow-y: auto;
+}
+
+/* 流式预览没有固定卡高：内容撑开，卡片之间仍用 8 / 9px 边距画间隙 */
+.grid-mobile.flow-view .mob-card,
+.grid-pad.flow-view .mob-card {
+  height: auto;
+  overflow: visible;
+}
+
+/* 预览里进程榜不再卡内滚动（App 流式页是整页滚动） */
+.grid-mobile.flow-view .mob-list,
+.grid-pad.flow-view .mob-list {
+  overflow: visible;
+}
+
+/* 预览是只读的：藏掉编辑手柄与虚线框，避免看起来还能拖 */
+body.flow-preview .w-remove,
+body.flow-preview .w-resize {
+  display: none !important;
+}
+
+body.flow-preview .editing .widget,
+body.flow-preview .widget {
+  cursor: default;
+  outline: none;
+}
+
+/* 移动预览卡（src/widgets/mobile.js）：尺寸 / 字号 / 内距全部照 App 端
+ * `pages/index/index.uvue` 的 .card 抄——编辑器里看到的排版就是设备上的排版。
+ * 卡片本身是网格项，网格 gap 为 0，间隙由这里的右边距 8px / 下边距 9px 画
+ * （与 App 的 .card 同一套边距）。 */
+.mob-card {
+  margin: 0 8px 9px 0;
+  padding: 14px;
+  gap: 0;
+  background: #1a2028;
+  border: 0;
+  border-radius: 10px;
+  /* h × rowUnit 是固定高度；内容超了裁在卡内，绝不压到邻居卡上 */
+  overflow: hidden;
+}
+
+.mob-card.mob-compact {
+  padding: 10px 12px 11px;
+}
+
+.mob-card[data-accent="cpu"] {
+  --mob-accent: #4da3ff;
+}
+
+.mob-card[data-accent="mem"] {
+  --mob-accent: #3ecf8e;
+}
+
+.mob-card[data-accent="bat"] {
+  --mob-accent: #a97bff;
+}
+
+.mob-card[data-accent="gpu"] {
+  --mob-accent: #35d6c4;
+}
+
+.mob-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.mob-head h2 {
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 16px;
+  color: #8a97a5;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 卡内大数字的基准（每核峰值 / 电源主数 / 环心各有覆盖） */
+.mob-big {
+  font-size: 28px;
+  font-weight: bold;
+  font-variant-numeric: tabular-nums;
+  color: #e8edf2;
+  white-space: nowrap;
+}
+
+/* 每核负载的峰值：与 App 的 .big 同位置（标题下方）、同字号 / 行高 */
+.mob-peak {
+  font-size: 28px;
+  line-height: 34px;
+  font-weight: bold;
+  font-variant-numeric: tabular-nums;
+  color: #e8edf2;
+  margin: 4px 0 8px;
+}
+
+/* 环形图：底环（整圈轨道色）+ 左右两半遮罩（overflow:hidden 裁掉半圆外的弧）。
+ * 遮罩内的弧是 200% 宽的整圆边框（只着色相邻两边），JS 按进度旋转——
+ * 数学见 mobile.js 的 ringAngles，与 App 端同一套（80px 环 / 6px 边）。 */
+.mob-ring {
+  position: relative;
+  width: 80px;
+  height: 80px;
+  margin: 4px auto 10px;
+  flex: 0 0 auto;
+}
+
+.mob-ring-track {
+  position: absolute;
+  inset: 0;
+  border: 6px solid #232b36;
+  border-radius: 50%;
+}
+
+.mob-ring-half {
+  position: absolute;
+  top: 0;
+  width: 50%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.mob-ring-half.r {
+  left: 50%;
+}
+
+.mob-ring-half.l {
+  left: 0;
+}
+
+.mob-ring-half i {
+  position: absolute;
+  top: 0;
+  width: 200%;
+  height: 100%;
+  border: 6px solid transparent;
+  border-radius: 50%;
+  transition: transform 0.45s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* 遮罩内的弧必须是**以环心为圆心**的整圆：右半遮罩左缘在环心，弧要左移
+ * 100%（= 半个环宽）才与轨道同心；左半遮罩左缘在环左缘，弧 left:0 即可。
+ * 早先两处写反（右 0 / 左 right:0），弧心落在环的左右边缘上——弧的
+ * 半径位置整体偏出半个环，看起来像一圈错位的彩色弧线。 */
+.mob-ring-half.r i {
+  left: -100%;
+  border-top-color: var(--mob-accent, var(--cpu));
+  border-right-color: var(--mob-accent, var(--cpu));
+}
+
+.mob-ring-half.l i {
+  left: 0;
+  border-bottom-color: var(--mob-accent, var(--cpu));
+  border-left-color: var(--mob-accent, var(--cpu));
+}
+
+.mob-ring-center {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+}
+
+.mob-ring-center .mob-big {
+  font-size: 19px;
+}
+
+.mob-ring-label {
+  font-size: 10px;
+  margin-top: 2px;
+  color: #8a97a5;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mob-kv {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.mob-kv li {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  /* 固定高度布局下明细行要紧凑：h=3 的卡最多 6 行（GPU），
+   * 4px 上下内距会把最后一行挤出卡外（App 端同一套值） */
+  padding: 2px 0;
+  line-height: 16px;
+}
+
+.mob-kv li span {
+  color: #8a97a5;
+  font-size: 12px;
+  flex: 0 0 auto;
+}
+
+.mob-kv li b {
+  font-weight: 400;
+  color: #e8edf2;
+  font-size: 13px;
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 电源功率：主数字取电池实时功率（PC 同口径），橙色；字号与 App 的
+ * .power-value（24px，含单位）一致 */
+.mob-power {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 4px;
+  margin: 4px 0 10px;
+}
+
+.mob-power .mob-big {
+  font-size: 24px;
+  color: #ff8a4c;
+}
+
+.mob-power i {
+  font-style: normal;
+  font-size: 24px;
+  font-weight: bold;
+  color: #ff8a4c;
+}
+
+/* 网络：下行 / 上行双速率并排（颜色与 PC 网络卡一致） */
+.mob-rates {
+  display: flex;
+  justify-content: center;
+  gap: 14px;
+  margin: 4px 0 10px;
+}
+
+.mob-rate {
+  display: flex;
+  align-items: baseline;
+  gap: 3px;
+}
+
+.mob-rate .arrow {
+  font-size: 12px;
+  font-style: normal;
+}
+
+.mob-rate.rx .arrow {
+  color: #3ddc84;
+}
+
+.mob-rate.tx .arrow {
+  color: #ffd166;
+}
+
+.mob-rate b {
+  font-size: 15px;
+  font-weight: bold;
+  color: #e8edf2;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* 迷你趋势：细条 sparkline（每格两根）。趋势卡是 CPU/内存（c/m 双色），
+ * 网络卡是 收/发（r/t 双色）——同一套骨架，颜色类不同。
+ * 高度照 App：趋势 100px（精简 55px）、网络 60px。 */
+.mob-spark {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-end;
+  gap: 1px;
+}
+
+.mob-card[data-type="net"] .mob-spark {
+  height: 60px;
+  margin-bottom: 4px;
+}
+
+.mob-card[data-type="trend"] .mob-spark {
+  height: 100px;
+}
+
+.mob-spark i {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+  gap: 1px;
+}
+
+.mob-spark i b {
+  flex: 1 1 0;
+  min-width: 0;
+  border-radius: 1px;
+}
+
+.mob-spark i b.c {
+  background: #4da3ff;
+}
+
+.mob-spark i b.m {
+  background: #3ecf8e;
+}
+
+.mob-spark i b.r {
+  background: #3ddc84;
+}
+
+.mob-spark i b.t {
+  background: #ffd166;
+}
+
+/* 趋势卡：图例 + 当前值行（尺寸照 App 的 legend / trend-sub） */
+.mob-legend {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 6px;
+  font-size: 11px;
+  color: #8a97a5;
+}
+
+.mob-legend i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  display: inline-block;
+  margin: 0 3px 0 8px;
+}
+
+.mob-legend i:first-child {
+  margin-left: 0;
+}
+
+.mob-legend i.c {
+  background: #4da3ff;
+}
+
+.mob-legend i.m {
+  background: #3ecf8e;
+}
+
+.mob-sub {
+  margin-top: 7px;
+  font-size: 12px;
+  color: #8a97a5;
+  text-align: left;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 硬盘：逐卷容量面板（挂载点 + 已用% + 容量条 + 已用/共） */
+.mob-vols {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.mob-vol {
+  margin-bottom: 9px;
+}
+
+.mob-vol-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.mob-vol-head b {
+  font-weight: bold;
+  color: #a9b7c6;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mob-vol-head span {
+  color: #8a97a5;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  flex: 0 0 auto;
+}
+
+.mob-vol-bar {
+  height: 5px;
+  border-radius: 2.5px;
+  background: #141922;
+  overflow: hidden;
+  margin: 4px 0 3px;
+}
+
+.mob-vol-bar i {
+  display: block;
+  height: 100%;
+  border-radius: 2.5px;
+  background: #f5c451;
+  transition: width 0.4s ease;
+}
+
+.mob-vol-meta {
+  font-size: 10px;
+  color: #8a97a5;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 每核负载：两列（flex 换行，与 App 的 .cores-grid 同构），每核
+ * 「序号 + 横条 + 数值」两列网格，三档变色（与 PC / App 同色） */
+.mob-core-grid {
+  display: flex;
+  flex-wrap: wrap;
+  margin-top: 3px;
+}
+
+.mob-core {
+  display: flex;
+  align-items: center;
+  width: 50%;
+  margin-bottom: 6px;
+  font-size: 10px;
+}
+
+.mob-core > span {
+  color: #5a6774;
+  flex: 0 0 18px;
+  text-align: right;
+  margin-right: 4px;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.mob-core-bar {
+  flex: 1 1 auto;
+  height: 4px;
+  border-radius: 2px;
+  background: #141922;
+  overflow: hidden;
+  margin-right: 4px;
+}
+
+.mob-core-bar i {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: #4da3ff;
+}
+
+.mob-core.t2 .mob-core-bar i {
+  background: #f5b940;
+}
+
+.mob-core.t3 .mob-core-bar i {
+  background: #f2685c;
+}
+
+.mob-core > b {
+  flex: 0 0 28px;
+  text-align: right;
+  font-weight: 400;
+  color: #a9b7c6;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 进程榜：序号 + 名字 + 双指标（排序列提亮），两列数值右对齐 */
+.mob-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.mob-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 4px 0;
+}
+
+.mob-list li > i {
+  font-style: normal;
+  color: #5a6774;
+  font-size: 11px;
+  flex: 0 0 16px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.mob-list .mob-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: #a9b7c6;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mob-list b {
+  font-weight: 400;
+  color: #e8edf2;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.mob-list b.lead {
+  color: #e8edf2;
+  font-weight: bold;
+}
+
+/* 次指标（双指标里非排序列）比主指标淡一档，与 App 的 .proc-sub 同色 */
+.mob-list li > b + b {
+  font-size: 11px;
+  color: #5a6774;
+}
+
+/* 精简形态（h < 3）按卡片类型收纳：明细行全藏；磁盘藏卷面板；
+ * 网络藏趋势；每核藏序号与数值；趋势藏图例与当前值、条变矮。
+ * 与 App 端 .card-compact 的 v-if 口径逐条对应。 */
+.mob-compact .mob-kv {
+  display: none;
+}
+
+.mob-compact .mob-peak {
+  font-size: 22px;
+  line-height: 26px;
+  margin: 2px 0 4px;
+}
+
+.mob-card[data-type="disk"].mob-compact .mob-vols {
+  display: none;
+}
+
+/* 硬盘精简卡不能只剩标题：卷面板藏掉后保留读 / 写两行（与 App 的 compact 口径一致） */
+.mob-card[data-type="disk"].mob-compact .mob-kv {
+  display: flex;
+}
+
+.mob-card[data-type="disk"].mob-compact .mob-kv li {
+  padding: 1px 0;
+}
+
+.mob-card[data-type="net"].mob-compact .mob-spark {
+  display: none;
+}
+
+/* 手机固定一屏的网卡只有 1 列宽：双速率并排会截断，精简形态改成上下两行 */
+.mob-card[data-type="net"].mob-compact .mob-rates {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  margin: 2px 0 0;
+}
+
+.mob-card[data-type="net"].mob-compact .mob-rate b {
+  font-size: 13px;
+}
+
+.mob-card[data-type="cores"].mob-compact .mob-core > span,
+.mob-card[data-type="cores"].mob-compact .mob-core > b {
+  display: none;
+}
+
+/* 趋势精简卡藏图例，但保留当前值行（App 的 compact 也始终显示 sub） */
+.mob-card[data-type="trend"].mob-compact .mob-legend {
+  display: none;
+}
+
+.mob-card[data-type="trend"].mob-compact .mob-spark {
+  height: 55px;
 }
 
 /* ---------------- statusbar ---------------- */

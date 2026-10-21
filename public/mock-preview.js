@@ -275,6 +275,66 @@
     intervalMs: 1000,
     metrics: ["cpu", "mem", "gpu", "net"],
   };
+  // 移动 App 布局（mobile-layout.json 的后端镜像）：每个设备两份布局
+  // （流式 flow / 固定一屏 grid）+ 当前激活模式。mock 里在内存中持久，刷新回默认。
+  let mobileLayout = {
+    phone: {
+      mode: "flow",
+      flow: {
+        v: 1,
+        widgets: [
+          { type: "cpu", x: 0, y: 0, w: 2, h: 3 },
+          { type: "mem", x: 2, y: 0, w: 2, h: 3 },
+          { type: "gpu", x: 0, y: 3, w: 2, h: 3 },
+          { type: "bat", x: 2, y: 3, w: 2, h: 3 },
+          { type: "net", x: 0, y: 6, w: 2, h: 3 },
+          { type: "disk", x: 2, y: 6, w: 2, h: 3 },
+        ],
+      },
+      grid: {
+        v: 1,
+        widgets: [
+          { type: "cpu", x: 0, y: 0, w: 1, h: 2 },
+          { type: "mem", x: 1, y: 0, w: 1, h: 2 },
+          { type: "gpu", x: 2, y: 0, w: 1, h: 2 },
+          { type: "bat", x: 3, y: 0, w: 1, h: 2 },
+          { type: "power", x: 0, y: 2, w: 1, h: 2 },
+          { type: "net", x: 1, y: 2, w: 1, h: 2 },
+          { type: "disk", x: 2, y: 2, w: 1, h: 2 },
+          { type: "trend", x: 3, y: 2, w: 1, h: 2 },
+        ],
+      },
+    },
+    pad: {
+      mode: "flow",
+      flow: {
+        v: 1,
+        widgets: [
+          { type: "cpu", x: 0, y: 0, w: 3, h: 3 },
+          { type: "mem", x: 3, y: 0, w: 3, h: 3 },
+          { type: "gpu", x: 0, y: 3, w: 3, h: 3 },
+          { type: "bat", x: 3, y: 3, w: 3, h: 3 },
+          { type: "net", x: 0, y: 6, w: 3, h: 3 },
+          { type: "disk", x: 3, y: 6, w: 3, h: 3 },
+        ],
+      },
+      grid: {
+        v: 1,
+        widgets: [
+          { type: "cpu", x: 0, y: 0, w: 2, h: 2 },
+          { type: "mem", x: 2, y: 0, w: 2, h: 2 },
+          { type: "gpu", x: 4, y: 0, w: 2, h: 2 },
+          { type: "bat", x: 0, y: 2, w: 2, h: 2 },
+          { type: "power", x: 2, y: 2, w: 2, h: 2 },
+          { type: "net", x: 4, y: 2, w: 2, h: 2 },
+          { type: "disk", x: 0, y: 4, w: 2, h: 2 },
+          { type: "trend", x: 2, y: 4, w: 2, h: 2 },
+          { type: "cores", x: 4, y: 4, w: 2, h: 2 },
+        ],
+      },
+    },
+  };
+  const mobileLayoutOf = (device) => (device === "pad" ? mobileLayout.pad : mobileLayout.phone);
   // 风扇号手动指定：null = 自动（与后端 FanPref 同构，越界的号会被清洗成 null）
   let fanPrefCpuId = null;
 
@@ -441,7 +501,7 @@
           const port = Number(next.port);
           if (!Number.isFinite(port) || port < 1 || port > 65535) next.port = 17432;
           next.intervalMs = Math.min(10000, Math.max(300, Number(next.intervalMs) || 1000));
-          const keys = ["cpu", "mem", "gpu", "bat", "net", "disk"];
+          const keys = ["cpu", "mem", "gpu", "bat", "net", "disk", "cores", "procs"];
           next.metrics = (next.metrics || []).filter((m) => keys.includes(m));
           if (!next.metrics.length) next.metrics = ["cpu", "mem", "gpu", "net"];
           if (!next.tcpEnabled && !next.bleEnabled) next.tcpEnabled = true;
@@ -462,6 +522,58 @@
             bleError: "",
             lastPushMs: run ? Date.now() : 0,
           });
+        }
+        case "get_mobile_layout":
+          return Promise.resolve(mobileLayoutOf(args.device));
+        case "set_mobile_layout": {
+          // 复刻后端清洗：类型白名单 11 种、按 type 去重、w 夹 1~cols、x 夹 0~cols-w
+          // （cols：手机 4 / 平板 6）、flow 的 h 夹 1~8 / y 夹 0~2000；grid 的
+          // h 夹 1~rows、y 夹 0~rows-h（rows：手机 4 / 平板 6），排序后丢掉重叠项。
+          // 与 mobile_layout.rs 的 sanitize 同规则。
+          const TYPES = [
+            "cpu", "mem", "bat", "gpu", "power", "net",
+            "trend", "cores", "disk", "procCpu", "procMem",
+          ];
+          const isPad = args.device === "pad";
+          const cols = isPad ? 6 : 4;
+          const rows = isPad ? 6 : 4;
+          const mode = args.mode === "grid" ? "grid" : "flow";
+          const seen = new Set();
+          const widgets = (args.layout && args.layout.widgets) || [];
+          const cleanWidgets = widgets
+            .filter((w) => w && TYPES.includes(w.type) && !seen.has(w.type) && seen.add(w.type))
+            .map((w) => {
+              const cw = Math.min(cols, Math.max(1, Math.round(Number(w.w) || 1)));
+              const hMax = mode === "grid" ? rows : 8;
+              const ch = Math.min(hMax, Math.max(1, Math.round(Number(w.h) || 1)));
+              const yMax = mode === "grid" ? Math.max(0, rows - ch) : 2000;
+              return {
+                type: w.type,
+                w: cw,
+                x: Math.min(cols - cw, Math.max(0, Math.round(Number(w.x) || 0))),
+                y: Math.min(yMax, Math.max(0, Math.round(Number(w.y) || 0))),
+                h: ch,
+              };
+            })
+            .sort((a, b) => a.y - b.y || a.x - b.x);
+          const kept = [];
+          for (const w of cleanWidgets) {
+            if (mode === "grid" && kept.some((p) =>
+              w.x < p.x + p.w && p.x < w.x + w.w && w.y < p.y + p.h && p.y < w.y + w.h)) {
+              continue;
+            }
+            kept.push(w);
+          }
+          const clean = { v: 1, widgets: kept };
+          const d = mobileLayoutOf(args.device);
+          if (mode === "grid") d.grid = clean;
+          else d.flow = clean;
+          return Promise.resolve(clean);
+        }
+        case "set_mobile_layout_mode": {
+          const d = mobileLayoutOf(args.device);
+          d.mode = args.mode === "grid" ? "grid" : "flow";
+          return Promise.resolve(d.mode);
         }
         case "show_main_window":
           return Promise.resolve(null);

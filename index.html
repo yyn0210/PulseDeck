@@ -98,16 +98,56 @@
 
       <!-- ================= 监控页 ================= -->
       <!-- 卡片全部组件化（src/widgets/），由 dashboard.js 按布局配置动态挂载进 #grid；
-           布局（谁在哪、多大）存在 localStorage pd.layout，编辑模式可拖拽/缩放/增删。 -->
+           布局（谁在哪、多大）存在 localStorage pd.layout，编辑模式可拖拽/缩放/增删。
+           同一套编辑器还管移动 App 的四套布局——手机 / 平板 × 流式 / 固定一屏；
+           存 pd.mlayout / pd.mlayoutPad / pd.mlayoutGrid / pd.mlayoutPadGrid，
+           经数据推送给 App。编辑态用工具条上的「桌面 / 手机 / 平板」+「流式 / 固定一屏」切换。 -->
       <main id="view-monitor" class="monitor-view">
         <!-- 编辑布局工具条：只在编辑模式显示（进出由顶栏「编辑布局」按钮切换） -->
         <div class="editbar hidden" id="editbar">
+          <div class="editbar-target" id="editbar-target" role="tablist" aria-label="布局目标">
+            <button type="button" class="editbar-target-btn active" data-target="desk">桌面</button>
+            <button type="button" class="editbar-target-btn" data-target="phone">手机</button>
+            <button type="button" class="editbar-target-btn" data-target="pad">平板</button>
+          </div>
+          <!-- 模式按钮只在手机 / 平板目标显示；切换会同步切换 App 的显示模式 -->
+          <div class="editbar-target editbar-mode" id="editbar-mode" role="tablist" aria-label="布局模式">
+            <button type="button" class="editbar-target-btn editbar-mode-btn active" data-mode="flow">流式</button>
+            <button type="button" class="editbar-target-btn editbar-mode-btn" data-mode="grid">固定一屏</button>
+          </div>
           <span class="editbar-label">添加组件</span>
           <div class="editbar-chips" id="editbar-chips"></div>
+          <button class="btn hidden" id="edit-flowview" type="button">流式预览</button>
           <button class="btn" id="edit-reset" type="button">重置布局</button>
+          <span class="editbar-note" id="editbar-note" role="status" aria-live="polite"></span>
         </div>
         <div class="grid" id="grid">
           <div class="grid-empty hidden">面板是空的——点上方「＋」把组件加回来</div>
+        </div>
+        <!-- 移动端布局预览（手机 / 平板两个横屏框）：只在「编辑布局 + 手机/平板」目标时
+             显示（.phone-wrap 的显隐由 body.editing 与 body.edit-mobile 共同控制，
+             再由 body.edit-phone / edit-pad 挑显示哪个框、body.edit-flow / edit-grid
+             挑显示哪套网格，见 style.css） -->
+        <div class="phone-wrap" id="phone-wrap" aria-hidden="true">
+          <div class="phone-frame frame-phone">
+            <div class="phone-notch"></div>
+            <div class="grid grid-mobile" id="grid-mobile">
+              <div class="grid-empty hidden">手机面板是空的——点上方「＋」把组件加回来</div>
+            </div>
+            <div class="grid grid-mobile grid-fixed grid-fixed-phone" id="grid-mobile-grid">
+              <div class="grid-empty hidden">手机固定一屏是空的——点上方「＋」把组件加回来</div>
+            </div>
+          </div>
+          <div class="phone-frame frame-pad">
+            <div class="phone-notch"></div>
+            <div class="grid grid-pad" id="grid-pad">
+              <div class="grid-empty hidden">平板面板是空的——点上方「＋」把组件加回来</div>
+            </div>
+            <div class="grid grid-pad grid-fixed grid-fixed-pad" id="grid-pad-grid">
+              <div class="grid-empty hidden">平板固定一屏是空的——点上方「＋」把组件加回来</div>
+            </div>
+          </div>
+          <p class="phone-note">流式：按网格阅读顺序排列，h 只控制精简 / 详细，卡片高度随内容；固定一屏：手机 4×4 / 平板 6×6，整屏不滚动。切换模式会同步切换 App 显示；两套布局都经「数据推送」下发。</p>
         </div>
       </main>
 
@@ -408,6 +448,12 @@
                   </label>
                   <label class="chip">
                     <input type="checkbox" value="disk" /><span>磁盘读写</span>
+                  </label>
+                  <label class="chip">
+                    <input type="checkbox" value="cores" /><span>每核负载</span>
+                  </label>
+                  <label class="chip">
+                    <input type="checkbox" value="procs" /><span>进程榜</span>
                   </label>
                 </div>
               </div>
