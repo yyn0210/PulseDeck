@@ -86,6 +86,39 @@ function baseDef(type, title, accent) {
   return { type, title, accent, minW: 1, minH: 2, maxW: 6, maxH: 6, defW: 2, defH: 3 };
 }
 
+/* ---- 折线（趋势卡 / 网络迷你趋势）----
+ * App 端用「一段段绕中心旋转的 2px 线段」拼折线（uni-app x 不引 canvas），
+ * 预览这边用 SVG polyline——同一条折线、同一套坐标映射，画出来的形状一致。
+ * 两边共用下面这套映射，改一处必须改另一处：
+ *   x = 原始下标 / (点数-1) × 100（时间轴线性铺满）
+ *   y = 2 + (1 - v/100) × 96（0% 在底，上下各留 2% 余量）
+ *   点数超过 LINE_MAX_PTS 就等间隔抽稀（但必须带上最后一个点）。 */
+const LINE_MAX_PTS = 30;
+
+/** 0~100 的序列 → SVG viewBox(0 0 100 100) 里的点串 */
+function linePoints(vals) {
+  const n = vals.length;
+  if (n < 2) return "";
+  const step = n > LINE_MAX_PTS ? Math.ceil(n / LINE_MAX_PTS) : 1;
+  const idx = [];
+  for (let i = 0; i < n; i += step) idx.push(i);
+  if (idx[idx.length - 1] !== n - 1) idx.push(n - 1);
+  const pts = [];
+  for (const i of idx) {
+    const v = Math.max(0, Math.min(100, vals[i]));
+    pts.push(`${((i / (n - 1)) * 100).toFixed(2)},${(2 + (1 - v / 100) * 96).toFixed(2)}`);
+  }
+  return pts.join(" ");
+}
+
+/** 折线末点的位置（端点圆点用；右端留半个圆点，免得被裁掉） */
+function lineEndPct(vals) {
+  const n = vals.length;
+  if (n < 1) return { left: "0%", top: "0%" };
+  const v = Math.max(0, Math.min(100, vals[n - 1]));
+  return { left: "calc(100% - 3px)", top: `${(2 + (1 - v / 100) * 96).toFixed(2)}%` };
+}
+
 /* ---- 环形卡工厂（cpu / 内存 / GPU / 电池）：环 + 中心大数字 + 明细行 ---- */
 
 /**
@@ -100,6 +133,7 @@ function ringCard(type, title, accent, main) {
       root.innerHTML = `
         <header class="mob-head"><h2>${title}</h2></header>
         <div class="mob-ring">
+          <i class="mob-ring-glow"></i>
           <i class="mob-ring-track"></i>
           <span class="mob-ring-half r"><i></i></span>
           <span class="mob-ring-half l"><i></i></span>
@@ -265,7 +299,7 @@ const powerCard = {
 /* ---- 网络：下行/上行双速率 + 迷你趋势（按历史峰值归一）+ 累计行 ---- */
 
 const netCard = {
-  ...baseDef("net", "网络", null),
+  ...baseDef("net", "网络", "net"),
   mount(root) {
     root.classList.add("mob-card");
     root.innerHTML = `
@@ -274,19 +308,24 @@ const netCard = {
         <div class="mob-rate rx"><span class="arrow">↓</span><b>--</b></div>
         <div class="mob-rate tx"><span class="arrow">↑</span><b>--</b></div>
       </div>
-      <div class="mob-spark"></div>
+      <div class="mob-spark">
+        <svg class="mob-line" viewBox="0 0 100 100" preserveAspectRatio="none">
+          <polyline class="r"></polyline>
+          <polyline class="t"></polyline>
+        </svg>
+        <i class="mob-dot r"></i>
+        <i class="mob-dot t"></i>
+      </div>
       <ul class="mob-kv"></ul>`;
     const down = root.querySelector(".mob-rate.rx b");
     const up = root.querySelector(".mob-rate.tx b");
     const body = root.querySelector(".mob-spark");
+    const polyR = body.querySelector("polyline.r");
+    const polyT = body.querySelector("polyline.t");
+    const dotR = body.querySelector(".mob-dot.r");
+    const dotT = body.querySelector(".mob-dot.t");
     const kv = root.querySelector(".mob-kv");
     const hist = [];
-    const bars = Array.from({ length: SPARK_POINTS }, () => {
-      const el = document.createElement("i");
-      el.innerHTML = "<b class='r'></b><b class='t'></b>";
-      body.append(el);
-      return el;
-    });
     return {
       update(snap, ctx) {
         root.classList.toggle("mob-compact", (ctx?.h ?? 3) < DETAIL_H);
@@ -295,14 +334,19 @@ const netCard = {
         up.textContent = fmtBps(n.txBytesPerSec);
         hist.push({ r: n.rxBytesPerSec, t: n.txBytesPerSec });
         if (hist.length > SPARK_POINTS) hist.shift();
-        // 速率不是百分比：按两条历史里的最大值归一，否则几 MB/s 的波在 100% 标尺下看不到
+        // 速率不是百分比：按两条历史里的最大值归一，否则几 MB/s 的波在 100% 标尺下看不见
         let max = 1;
         for (const p of hist) max = Math.max(max, p.r, p.t);
-        bars.forEach((el, i) => {
-          const p = hist[i];
-          el.querySelector(".r").style.height = p ? `${(p.r / max) * 100}%` : "0%";
-          el.querySelector(".t").style.height = p ? `${(p.t / max) * 100}%` : "0%";
-        });
+        const rs = hist.map((p) => (p.r / max) * 100);
+        const ts = hist.map((p) => (p.t / max) * 100);
+        polyR.setAttribute("points", linePoints(rs));
+        polyT.setAttribute("points", linePoints(ts));
+        const endR = lineEndPct(rs);
+        dotR.style.left = endR.left;
+        dotR.style.top = endR.top;
+        const endT = lineEndPct(ts);
+        dotT.style.left = endT.left;
+        dotT.style.top = endT.top;
         // 累计流量按 MiB 取整（推送字段是整数 MiB），预览同口径；
         // 直接报字节会多出几位，和 App 上看到的数不一样
         const mib = 1024 * 1024;
@@ -366,7 +410,7 @@ const diskCard = {
 /* ---- CPU 与内存趋势：图例 + 细条 sparkline + 当前值行（App 端同款，不引 canvas） ---- */
 
 const trendCard = {
-  ...baseDef("trend", "趋势", null),
+  ...baseDef("trend", "趋势", "trend"),
   defW: 4,
   defH: 2,
   mount(root) {
@@ -374,27 +418,37 @@ const trendCard = {
     root.innerHTML = `
       <header class="mob-head"><h2>CPU 与内存趋势</h2></header>
       <div class="mob-legend"><i class="c"></i>CPU<i class="m"></i>内存</div>
-      <div class="mob-spark"></div>
+      <div class="mob-spark">
+        <svg class="mob-line" viewBox="0 0 100 100" preserveAspectRatio="none">
+          <polyline class="c"></polyline>
+          <polyline class="m"></polyline>
+        </svg>
+        <i class="mob-dot c"></i>
+        <i class="mob-dot m"></i>
+      </div>
       <div class="mob-sub">CPU -- · 内存 --</div>`;
     const body = root.querySelector(".mob-spark");
+    const polyC = body.querySelector("polyline.c");
+    const polyM = body.querySelector("polyline.m");
+    const dotC = body.querySelector(".mob-dot.c");
+    const dotM = body.querySelector(".mob-dot.m");
     const sub = root.querySelector(".mob-sub");
     const hist = [];
-    const bars = Array.from({ length: SPARK_POINTS }, () => {
-      const el = document.createElement("i");
-      el.innerHTML = "<b class='c'></b><b class='m'></b>";
-      body.append(el);
-      return el;
-    });
     return {
       update(snap, ctx) {
         root.classList.toggle("mob-compact", (ctx?.h ?? 3) < DETAIL_H);
         hist.push({ c: snap.cpu?.usageTotal ?? 0, m: snap.memory?.usagePct ?? 0 });
         if (hist.length > SPARK_POINTS) hist.shift();
-        bars.forEach((el, i) => {
-          const p = hist[i];
-          el.querySelector(".c").style.height = p ? `${Math.max(0, Math.min(100, p.c))}%` : "0%";
-          el.querySelector(".m").style.height = p ? `${Math.max(0, Math.min(100, p.m))}%` : "0%";
-        });
+        const cs = hist.map((p) => Math.max(0, Math.min(100, p.c)));
+        const ms = hist.map((p) => Math.max(0, Math.min(100, p.m)));
+        polyC.setAttribute("points", linePoints(cs));
+        polyM.setAttribute("points", linePoints(ms));
+        const endC = lineEndPct(cs);
+        dotC.style.left = endC.left;
+        dotC.style.top = endC.top;
+        const endM = lineEndPct(ms);
+        dotM.style.left = endM.left;
+        dotM.style.top = endM.top;
         const last = hist[hist.length - 1];
         sub.textContent = `CPU ${fmtPercent(last?.c)} · 内存 ${fmtPercent(last?.m)}`;
       },
@@ -408,7 +462,7 @@ const trendCard = {
 /* ---- 每核负载：每核「序号 + 横条 + 数值」两列网格（PC 端同形态，三档变色） ---- */
 
 const coresCard = {
-  ...baseDef("cores", "每核负载", "cpu"),
+  ...baseDef("cores", "每核负载", "cores"),
   mount(root) {
     root.classList.add("mob-card");
     root.innerHTML = `
@@ -451,7 +505,7 @@ const coresCard = {
 
 function procCard(type, title, byMem) {
   return {
-    ...baseDef(type, title, null),
+    ...baseDef(type, title, byMem ? "procmem" : "proccpu"),
     mount(root) {
       root.classList.add("mob-card");
       root.innerHTML = `

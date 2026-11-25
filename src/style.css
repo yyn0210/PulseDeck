@@ -1331,7 +1331,8 @@ body.editing.edit-mobile #grid {
   border-radius: 28px;
   /* 与 App 端 .page 同色同内距：预览里看到的是设备页面的真实底色 */
   padding: 12px;
-  background: #0f1319;
+  background-color: #05080f;
+  background-image: linear-gradient(to bottom, #12203a 0%, #0a1120 34%, #070b14 72%, #05080e 100%);
 }
 
 /* 平板预览框：默认藏，只在 body.edit-pad 时顶替手机框显示 */
@@ -1528,13 +1529,28 @@ body.flow-preview .widget {
  * （与 App 的 .card 同一套边距）。 */
 .mob-card {
   margin: 0 8px 9px 0;
-  padding: 14px;
+  padding: 12px 13px;
   gap: 0;
-  background: #1a2028;
-  border: 0;
-  border-radius: 10px;
+  /* 深空仪表的卡片：深色面板 + 冷光细描边（与 App 端 .card 同一套） */
+  background-color: #0e1626;
+  background-image: linear-gradient(to bottom, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0));
+  border: 1px solid rgba(126, 158, 255, 0.13);
+  border-radius: 12px;
+  /* 顶部色条要贴着卡片自己的上沿，卡片得是定位基准 */
+  position: relative;
   /* h × rowUnit 是固定高度；内容超了裁在卡内，绝不压到邻居卡上 */
   overflow: hidden;
+}
+
+/* 顶部色条：卡片的「类型色」，与 App 端 .card-bar 同一套色 */
+.mob-card::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  right: 0;
+  height: 2px;
+  background: var(--mob-accent, #4da3ff);
 }
 
 .mob-card.mob-compact {
@@ -1547,14 +1563,45 @@ body.flow-preview .widget {
 
 .mob-card[data-accent="mem"] {
   --mob-accent: #3ecf8e;
+  --mob-ring-glow: rgba(62, 207, 142, 0.22);
 }
 
 .mob-card[data-accent="bat"] {
   --mob-accent: #a97bff;
+  --mob-ring-glow: rgba(169, 123, 255, 0.22);
 }
 
 .mob-card[data-accent="gpu"] {
   --mob-accent: #35d6c4;
+  --mob-ring-glow: rgba(53, 214, 196, 0.22);
+}
+
+.mob-card[data-accent="power"] {
+  --mob-accent: #ff8a4c;
+}
+
+.mob-card[data-accent="net"] {
+  --mob-accent: #6fa8ff;
+}
+
+.mob-card[data-accent="trend"] {
+  --mob-accent: #7f8cff;
+}
+
+.mob-card[data-accent="cores"] {
+  --mob-accent: #ffb454;
+}
+
+.mob-card[data-accent="disk"] {
+  --mob-accent: #f5c451;
+}
+
+.mob-card[data-accent="proccpu"] {
+  --mob-accent: #7f8cff;
+}
+
+.mob-card[data-accent="procmem"] {
+  --mob-accent: #a97bff;
 }
 
 .mob-head {
@@ -1566,22 +1613,25 @@ body.flow-preview .widget {
 }
 
 .mob-head h2 {
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 400;
   line-height: 16px;
-  color: #8a97a5;
+  letter-spacing: 0.5px;
+  color: #8fa3c0;
   margin: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-/* 卡内大数字的基准（每核峰值 / 电源主数 / 环心各有覆盖） */
+/* 卡内大数字的基准（每核峰值 / 电源主数 / 环心各有覆盖）。
+ * 数值一律等宽字体（仪表读数感），与 App 端同一套字体栈 */
 .mob-big {
   font-size: 28px;
   font-weight: bold;
   font-variant-numeric: tabular-nums;
-  color: #e8edf2;
+  font-family: "SF Mono", "JetBrains Mono", "Cascadia Mono", Consolas, "DejaVu Sans Mono", monospace;
+  color: #e9f1ff;
   white-space: nowrap;
 }
 
@@ -1591,7 +1641,8 @@ body.flow-preview .widget {
   line-height: 34px;
   font-weight: bold;
   font-variant-numeric: tabular-nums;
-  color: #e8edf2;
+  font-family: "SF Mono", "JetBrains Mono", "Cascadia Mono", Consolas, "DejaVu Sans Mono", monospace;
+  color: #e9f1ff;
   margin: 4px 0 8px;
 }
 
@@ -1606,10 +1657,21 @@ body.flow-preview .widget {
   flex: 0 0 auto;
 }
 
+/* 环外的一圈淡色晕（App 端 .ring-glow 的同一件东西） */
+.mob-ring-glow {
+  position: absolute;
+  left: -3px;
+  top: -3px;
+  width: 86px;
+  height: 86px;
+  border: 6px solid var(--mob-ring-glow, rgba(77, 163, 255, 0.22));
+  border-radius: 50%;
+}
+
 .mob-ring-track {
   position: absolute;
   inset: 0;
-  border: 6px solid #232b36;
+  border: 6px solid #1b2637;
   border-radius: 50%;
 }
 
@@ -1672,7 +1734,7 @@ body.flow-preview .widget {
 .mob-ring-label {
   font-size: 10px;
   margin-top: 2px;
-  color: #8a97a5;
+  color: #7d8ea6;
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1699,14 +1761,15 @@ body.flow-preview .widget {
 }
 
 .mob-kv li span {
-  color: #8a97a5;
+  color: #7d8ea6;
   font-size: 12px;
   flex: 0 0 auto;
 }
 
 .mob-kv li b {
   font-weight: 400;
-  color: #e8edf2;
+  color: #dbe6f7;
+  font-family: "SF Mono", "JetBrains Mono", "Cascadia Mono", Consolas, "DejaVu Sans Mono", monospace;
   font-size: 13px;
   flex: 1 1 auto;
   min-width: 0;
@@ -1729,14 +1792,14 @@ body.flow-preview .widget {
 
 .mob-power .mob-big {
   font-size: 24px;
-  color: #ff8a4c;
+  color: #ff9a5c;
 }
 
 .mob-power i {
   font-style: normal;
   font-size: 24px;
   font-weight: bold;
-  color: #ff8a4c;
+  color: #ff9a5c;
 }
 
 /* 网络：下行 / 上行双速率并排（颜色与 PC 网络卡一致） */
@@ -1769,19 +1832,20 @@ body.flow-preview .widget {
 .mob-rate b {
   font-size: 15px;
   font-weight: bold;
-  color: #e8edf2;
+  font-family: "SF Mono", "JetBrains Mono", "Cascadia Mono", Consolas, "DejaVu Sans Mono", monospace;
+  color: #e9f1ff;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
-/* 迷你趋势：细条 sparkline（每格两根）。趋势卡是 CPU/内存（c/m 双色），
- * 网络卡是 收/发（r/t 双色）——同一套骨架，颜色类不同。
+/* 折线图：趋势卡是 CPU/内存（c/m 双色），网络卡是 收/发（r/t 双色）——
+ * 同一套骨架，只换颜色类。App 端用「一段段绕中心旋转的 2px 线段」拼折线
+ * （uni-app x 不引 canvas），预览这边用 SVG polyline：同一条折线、同一套
+ * 坐标映射（见 widgets/mobile.js 的 linePoints），画出来形状一致。
  * 高度照 App：趋势 100px（精简 55px）、网络 60px。 */
 .mob-spark {
   flex: 0 0 auto;
-  display: flex;
-  align-items: flex-end;
-  gap: 1px;
+  position: relative;
 }
 
 .mob-card[data-type="net"] .mob-spark {
@@ -1793,34 +1857,61 @@ body.flow-preview .widget {
   height: 100px;
 }
 
-.mob-spark i {
-  flex: 1 1 0;
-  min-width: 0;
+/* 折线本体：viewBox 0 0 100 100 铺满绘图区，non-scaling-stroke 保证线宽不被拉伸 */
+.mob-line {
+  display: block;
+  width: 100%;
   height: 100%;
-  display: flex;
-  align-items: flex-end;
-  gap: 1px;
+  overflow: visible;
 }
 
-.mob-spark i b {
-  flex: 1 1 0;
-  min-width: 0;
-  border-radius: 1px;
+.mob-line polyline {
+  fill: none;
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
 }
 
-.mob-spark i b.c {
+.mob-line polyline.c {
+  stroke: #4da3ff;
+}
+
+.mob-line polyline.m {
+  stroke: #3ecf8e;
+}
+
+.mob-line polyline.r {
+  stroke: #3ddc84;
+}
+
+.mob-line polyline.t {
+  stroke: #ffd166;
+}
+
+/* 折线末端的圆点（当前值的位置） */
+.mob-dot {
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  border-radius: 3px;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.mob-dot.c {
   background: #4da3ff;
 }
 
-.mob-spark i b.m {
+.mob-dot.m {
   background: #3ecf8e;
 }
 
-.mob-spark i b.r {
+.mob-dot.r {
   background: #3ddc84;
 }
 
-.mob-spark i b.t {
+.mob-dot.t {
   background: #ffd166;
 }
 
@@ -1831,7 +1922,7 @@ body.flow-preview .widget {
   gap: 4px;
   margin-bottom: 6px;
   font-size: 11px;
-  color: #8a97a5;
+  color: #8fa3c0;
 }
 
 .mob-legend i {
@@ -1857,7 +1948,7 @@ body.flow-preview .widget {
 .mob-sub {
   margin-top: 7px;
   font-size: 12px;
-  color: #8a97a5;
+  color: #8fa3c0;
   text-align: left;
   font-variant-numeric: tabular-nums;
 }
@@ -1882,14 +1973,14 @@ body.flow-preview .widget {
 
 .mob-vol-head b {
   font-weight: bold;
-  color: #a9b7c6;
+  color: #cfdcf0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .mob-vol-head span {
-  color: #8a97a5;
+  color: #7d8ea6;
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   flex: 0 0 auto;
@@ -1898,7 +1989,7 @@ body.flow-preview .widget {
 .mob-vol-bar {
   height: 5px;
   border-radius: 2.5px;
-  background: #141922;
+  background: #0a1220;
   overflow: hidden;
   margin: 4px 0 3px;
 }
@@ -1913,7 +2004,7 @@ body.flow-preview .widget {
 
 .mob-vol-meta {
   font-size: 10px;
-  color: #8a97a5;
+  color: #6d7e96;
   font-variant-numeric: tabular-nums;
 }
 
@@ -1934,7 +2025,7 @@ body.flow-preview .widget {
 }
 
 .mob-core > span {
-  color: #5a6774;
+  color: #56657a;
   flex: 0 0 18px;
   text-align: right;
   margin-right: 4px;
@@ -1946,7 +2037,7 @@ body.flow-preview .widget {
   flex: 1 1 auto;
   height: 4px;
   border-radius: 2px;
-  background: #141922;
+  background: #0a1220;
   overflow: hidden;
   margin-right: 4px;
 }
