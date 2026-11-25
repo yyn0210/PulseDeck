@@ -464,7 +464,7 @@
           next.renderMode = next.skin === "dafeiyu" || next.renderMode !== "3d" ? "2d" : "3d";
           if (!["65", "108"].includes(next.layout)) next.layout = "65";
           if (!["cat", "viewer"].includes(next.orientation)) next.orientation = "cat";
-          next.scale = Math.min(1.5, Math.max(0.6, Number(next.scale) || 1));
+          next.scale = Math.min(1.5, Math.max(0.2, Number(next.scale) || 1));
           if (!["none", "red", "blue", "pink", "green"].includes(next.collar)) next.collar = "none";
           if (!["off", "on"].includes(next.headphones)) next.headphones = "off";
           petConfig = next;

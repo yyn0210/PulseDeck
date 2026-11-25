@@ -244,7 +244,7 @@ impl PetConfig {
         if !self.scale.is_finite() {
             self.scale = default_scale();
         }
-        self.scale = self.scale.clamp(0.6, 1.5);
+        self.scale = self.scale.clamp(0.2, 1.5);
     }
 }
 
@@ -417,7 +417,7 @@ pub fn window_size(config: &PetConfig) -> (f64, f64) {
         return (WIN_W, WIN_H);
     }
     let (bw, bh) = base_canvas_size(&config.layout);
-    let scale = config.scale.clamp(0.6, 1.5);
+    let scale = config.scale.clamp(0.2, 1.5);
     (
         (bw * scale).round().max(1.0),
         (bh * scale).round() + CAT_METRICS_BAR_H,
@@ -1003,7 +1003,7 @@ mod tests {
     }
 
     /// 非法新字段要被清洗：未知皮肤/键位/视角/配饰回落白名单首项，
-    /// 鲸鱼娘强制 2D，比例夹到 0.6~1.5
+    /// 鲸鱼娘强制 2D，比例夹到 0.2~1.5
     #[test]
     fn sanitize_normalizes_new_fields() {
         let mut cfg = PetConfig {
@@ -1032,7 +1032,7 @@ mod tests {
             ..PetConfig::default()
         };
         tiny.sanitize();
-        assert!((tiny.scale - 0.6).abs() < 1e-9);
+        assert!((tiny.scale - 0.2).abs() < 1e-9);
     }
 
     /// 窗口尺寸：经典 190×224；打字猫随键位与比例变化，并额外加指标条高度
@@ -1054,10 +1054,10 @@ mod tests {
         assert_eq!(window_size(&cat108), (540.0, 456.0 + CAT_METRICS_BAR_H));
 
         let small = PetConfig {
-            scale: 0.6,
+            scale: 0.2,
             ..PetConfig::default()
         };
-        assert_eq!(window_size(&small), (252.0, 264.0 + CAT_METRICS_BAR_H));
+        assert_eq!(window_size(&small), (84.0, 88.0 + CAT_METRICS_BAR_H));
     }
 
     /// 鼠标穿透锁定依赖 `set_ignore_cursor_events`，capability 必须显式授权
