@@ -2625,3 +2625,12 @@ body.flow-preview .widget {
 ::-webkit-scrollbar-track {
   background: transparent;
 }
+
+/* 桌面宠物：不适用的控件行整体变淡（值仍保留，切回可用形态时恢复） */
+.setting-row.is-disabled {
+  opacity: 0.55;
+}
+
+.pet-cat-hint {
+  margin: 8px 0 0;
+}

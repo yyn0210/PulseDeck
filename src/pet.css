@@ -4,8 +4,9 @@
  * 窗口本身由后端建：置顶 / 无边框 / 透明 / 不进任务栏，所以这里全程不要给 body 上底色，
  * 否则桌面宠物会变成一块矩形色板。
  *
- * 形象是 `src/assets/pet/*.webp`（6 档 × 4 帧，自带 alpha），由 pet.js 按 CPU 温度逐帧切换；
- * 这里只负责尺寸、同色投影（让宠物从桌面上「浮起来」）与整窗不透明度。
+ * 两种形象：
+ *   · classic —— 6 档 × 8 帧贴图（src/assets/pet/），尺寸由窗口 190×224 决定；
+ *   · cat     —— 打字猫（2D/3D/鲸鱼娘），画布占满窗口减去底部 44px 指标条。
  */
 
 :root {
@@ -33,19 +34,21 @@ body {
 .pet {
   height: 100%;
   box-sizing: border-box;
+  opacity: var(--pet-opacity);
+  transition: opacity 0.2s ease;
+  background: transparent;
+}
+
+/* ---------------- 经典贴图 ---------------- */
+
+.pet:not(.pet--cat) {
   padding: 4px 6px 6px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 2px;
-  opacity: var(--pet-opacity);
-  transition: opacity 0.2s ease;
-  /* 根容器纯透明——整只宠物只是贴图本身的剪影，桌面背景透过来 */
-  background: transparent;
 }
-
-/* ---------------- 宠物本体 ---------------- */
 
 .pet-stage {
   width: 118px;
@@ -66,8 +69,6 @@ body {
 .pet.is-hot .pet-img {
   filter: drop-shadow(0 5px 11px var(--pet-glow));
 }
-
-/* ---------------- 指标面板 ---------------- */
 
 .pet-panel {
   flex: 0 0 auto;
@@ -142,4 +143,235 @@ body {
 
 .pet.is-hot .pet-foot {
   color: #ff9f43;
+}
+
+/* ---------------- 打字猫（2D / 3D / 鲸鱼娘） ---------------- */
+
+.pet--cat {
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+}
+
+.cat-stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+}
+
+.cat-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  /* 画布里的透明区域不画任何底色 */
+  background: transparent;
+}
+
+/* hidden 属性必须压得住上面的 display:block */
+.cat-canvas[hidden],
+.cat-fallback[hidden] {
+  display: none !important;
+}
+
+/* 脚下的温度色光晕：比猫矮一圈，不盖住键盘 */
+.cat-glow {
+  position: absolute;
+  left: 50%;
+  bottom: 4%;
+  width: 72%;
+  height: 30%;
+  transform: translateX(-50%);
+  background: radial-gradient(
+    ellipse at center,
+    var(--cat-glow-color, rgba(34, 211, 165, 0.35)) 0%,
+    transparent 70%
+  );
+  filter: blur(7px);
+  opacity: 0.9;
+  pointer-events: none;
+  transition: background 0.4s ease;
+}
+
+/* 过热档：脸红 + 汗滴（DOM 叠层，不改引擎骨架动画） */
+.cat-heat {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.35s ease;
+}
+
+.cat-heat.is-hot {
+  opacity: 1;
+}
+
+.cat-blush {
+  position: absolute;
+  top: 43%;
+  width: 9%;
+  height: 6%;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255, 86, 112, 0.78), rgba(255, 86, 112, 0) 70%);
+  filter: blur(1.5px);
+}
+
+.cat-blush-l {
+  left: 35.5%;
+}
+
+.cat-blush-r {
+  right: 35.5%;
+}
+
+.cat-sweat {
+  position: absolute;
+  width: 9px;
+  height: 13px;
+  border-radius: 50% 50% 50% 50% / 62% 62% 38% 38%;
+  background: linear-gradient(180deg, #d8f2ff, #5cc8ff);
+  box-shadow: 0 0 7px rgba(92, 200, 255, 0.65);
+  opacity: 0;
+}
+
+.cat-sweat-a {
+  right: 24%;
+  top: 23%;
+  animation: cat-sweat 1.8s ease-in infinite;
+}
+
+.cat-sweat-b {
+  right: 17%;
+  top: 27%;
+  width: 6px;
+  height: 9px;
+  animation: cat-sweat 1.8s ease-in 0.9s infinite;
+}
+
+@keyframes cat-sweat {
+  0% {
+    opacity: 0;
+    transform: translateY(0) scale(0.7);
+  }
+  20% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(16px) scale(1);
+  }
+}
+
+.cat-fallback {
+  position: absolute;
+  left: 50%;
+  bottom: 5%;
+  transform: translateX(-50%);
+  max-width: 92%;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(11, 16, 28, 0.82);
+  border: 1px solid rgba(255, 184, 107, 0.35);
+  color: #ffb86b;
+  font-size: 10px;
+  line-height: 15px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+/* 摸头时给个手形光标；穿透锁定且未按 Alt 时不会走到这里 */
+.pet--cat.cat-hover {
+  cursor: grab;
+}
+
+/* 底部紧凑指标条：名称 + 迷你条 + 数值，温度跟在最后 */
+.cat-metrics {
+  flex: 0 0 44px;
+  height: 44px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 10px;
+  border-radius: 10px 10px 0 0;
+  background: rgba(11, 16, 28, 0.72);
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  color: #e8eefb;
+  font-size: clamp(9px, 2.6vw, 11px);
+  overflow: hidden;
+}
+
+.cat-metric {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1 1 0;
+  min-width: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.cat-metric.is-missing {
+  opacity: 0.45;
+}
+
+.cat-metric-empty {
+  flex: 1 1 auto;
+  justify-content: center;
+  color: #93a1bb;
+}
+
+.cat-metric-k {
+  flex: 0 0 auto;
+  color: #93a1bb;
+  white-space: nowrap;
+}
+
+.cat-metric-bar {
+  flex: 1 1 auto;
+  min-width: 12px;
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+}
+
+.cat-metric-bar > i {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: 999px;
+  transition: width 0.35s ease;
+}
+
+.cat-metric-v {
+  flex: 0 0 auto;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.cat-metric-temp {
+  flex: 0 0 auto;
+}
+
+.cat-metric-temp .cat-metric-v {
+  color: var(--temp-accent, #e8eefb);
+}
+
+/* 窄窗（60% 缩放）下把标签收紧一点，保证 3 指标 + 温度排得下 */
+@media (max-width: 340px) {
+  .cat-metrics {
+    gap: 6px;
+    padding: 0 6px;
+    font-size: 9px;
+  }
+
+  .cat-metric {
+    gap: 3px;
+  }
 }

@@ -7,23 +7,16 @@
   </head>
   <!--
     桌面宠物窗口：置顶、无边框、透明、不进任务栏。
-    整只宠物任何位置都能拖——body、.pet、.pet-stage、.pet-panel 全部打 deep，
+    整只宠物任何位置都能拖——body、.pet 与各阶段的容器全部打 deep，
     让 Tauri drag.js 沿事件路径向上识别时**总能**找到 deep 拖动区，
-    避免「target 是贴图的透明区域时找不到 deep 父级」的问题。
-    形象是 6 档 × 8 帧的贴图（src/assets/pet/，见 tools/copy_pet_frames.py），
-    由 src/pet.js 按 CPU 温度整段切换、档位内循环播放。
+    避免「target 是 canvas 的透明区域时找不到 deep 父级」的问题。
+
+    形象由 src/pet.js 按 pet.json 的 mode 分派：
+      · classic：6 档 × 8 帧贴图（src/assets/pet/，见 tools/copy_pet_frames.py）
+      · cat    ：打字猫（2D 手绘 / 3D 手办 / 鲸鱼娘），DOM 由 src/pet/cat.js 动态挂载
   -->
   <body data-tauri-drag-region="deep">
-    <div class="pet" id="pet" data-tauri-drag-region="deep">
-      <div class="pet-stage" data-tauri-drag-region="deep">
-        <img class="pet-img" id="pet-img" alt="" draggable="false" data-tauri-drag-region="deep" />
-      </div>
-
-      <div class="pet-panel" data-tauri-drag-region="deep">
-        <div class="pet-rows" id="pet-rows"></div>
-        <div class="pet-foot" id="pet-foot">温度 --</div>
-      </div>
-    </div>
+    <div class="pet" id="pet" data-tauri-drag-region="deep"></div>
 
     <!-- 开发预览替身：仅在 URL 带 ?mock=1 时生效 -->
     <script src="/mock-preview.js"></script>

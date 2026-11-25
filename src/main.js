@@ -739,12 +739,48 @@ async function initSettings() {
  * 后端会清洗配置（去掉非法指标、至少保留一项、透明度夹到 0.3~1.0），
  * 所以每次提交都用**返回值**回显，避免界面与实际状态不一致。 */
 const PET_KEY = "pd.petConfig";
-const PET_FALLBACK = { enabled: false, metrics: ["cpu", "mem", "gpu"], opacity: 1 };
+const PET_FALLBACK = {
+  enabled: false,
+  metrics: ["cpu", "mem", "gpu"],
+  opacity: 1,
+  mode: "cat",
+  renderMode: "2d",
+  skin: "black",
+  layout: "65",
+  orientation: "cat",
+  scale: 1,
+  sound: true,
+  clickThrough: false,
+  privacyGuard: true,
+  collar: "none",
+  headphones: "off",
+};
 
 const petSwitch = document.getElementById("opt-pet");
 const petMetricBox = document.getElementById("pet-metrics");
 const petOpacity = document.getElementById("pet-opacity");
 const petOpacityOut = document.getElementById("pet-opacity-out");
+
+const petModeBox = document.getElementById("pet-mode");
+const petRenderBox = document.getElementById("pet-render");
+const petSkinSelect = document.getElementById("pet-skin");
+const petLayoutBox = document.getElementById("pet-layout");
+const petOrientationBox = document.getElementById("pet-orientation");
+const petScale = document.getElementById("pet-scale");
+const petScaleOut = document.getElementById("pet-scale-out");
+const petSound = document.getElementById("pet-sound");
+const petClickThrough = document.getElementById("pet-click-through");
+const petPrivacy = document.getElementById("pet-privacy");
+const petCollar = document.getElementById("pet-collar");
+const petHeadphones = document.getElementById("pet-headphones");
+const petCatHint = document.getElementById("pet-cat-hint");
+const petRenderRow = document.getElementById("pet-render-row");
+const petSkinRow = document.getElementById("pet-skin-row");
+const petLayoutRow = document.getElementById("pet-layout-row");
+const petViewRow = document.getElementById("pet-view-row");
+const petScaleRow = document.getElementById("pet-scale-row");
+const petCatExtraRow = document.getElementById("pet-cat-extra");
+const pet3dRow = document.getElementById("pet-3d-row");
 
 const petStatusRow = document.getElementById("pet-status");
 const petStatusText = document.getElementById("pet-status-text");
@@ -786,6 +822,56 @@ async function refreshPetStatus() {
     petAlive = null;
   }
   renderPetStatus();
+  renderPetHints();
+}
+
+/** 单选组：读当前值 / 写选中态（选中态由 JS 打 is-on，兼容老 WebView2） */
+function radioValue(box, name, fallback) {
+  const checked = box?.querySelector(`input[name="${name}"]:checked`);
+  return checked ? checked.value : fallback;
+}
+
+function setRadio(box, name, value) {
+  if (!box) return;
+  box.querySelectorAll(`input[name="${name}"]`).forEach((input) => {
+    input.checked = input.value === value;
+    const chip = input.closest(".chip");
+    if (chip) chip.classList.toggle("is-on", input.checked);
+  });
+}
+
+function setChipInput(input, on) {
+  if (!input) return;
+  input.checked = Boolean(on);
+  const chip = input.closest(".chip");
+  if (chip) chip.classList.toggle("is-on", input.checked);
+}
+
+/** 让一行控件整体可用 / 禁用（禁用态只影响交互，不改配置值） */
+function setRowEnabled(row, enabled) {
+  if (!row) return;
+  row.classList.toggle("is-disabled", !enabled);
+  row.querySelectorAll("input, select, button").forEach((el) => {
+    el.disabled = !enabled;
+  });
+}
+
+/** 平台能力与 3D 回退原因：只在打字猫模式下显示 */
+function renderPetHints() {
+  if (!petCatHint) return;
+  const hints = [];
+  if (petAlive && petAlive.inputSupported === false) {
+    hints.push("当前平台暂不支持全局键鼠监听与密码防窥（仅 Windows）；打字猫仍会显示并刷新指标。");
+  }
+  let fallback = null;
+  try {
+    fallback = localStorage.getItem("pd.cat3dError");
+  } catch {
+    fallback = null;
+  }
+  if (fallback) hints.push(fallback);
+  petCatHint.textContent = hints.join(" ");
+  petCatHint.hidden = petCfg.mode === "classic" || hints.length === 0;
 }
 
 function petMetricInputs() {
@@ -803,6 +889,45 @@ function paintPetCfg() {
   const pct = Math.round((petCfg.opacity ?? 1) * 100);
   petOpacity.value = String(pct);
   petOpacityOut.textContent = `${pct}%`;
+
+  const cat = petCfg.mode !== "classic";
+  const whale = petCfg.skin === "dafeiyu";
+  const is3d = cat && !whale && petCfg.renderMode === "3d";
+
+  setRadio(petModeBox, "pet-mode", cat ? "cat" : "classic");
+  setRadio(petRenderBox, "pet-render", petCfg.renderMode === "3d" ? "3d" : "2d");
+  if (petSkinSelect) petSkinSelect.value = petCfg.skin || "black";
+  setRadio(petLayoutBox, "pet-layout", petCfg.layout === "108" ? "108" : "65");
+  setRadio(petOrientationBox, "pet-orientation", petCfg.orientation === "viewer" ? "viewer" : "cat");
+
+  const scalePct = Math.round((petCfg.scale ?? 1) * 100);
+  petScale.value = String(scalePct);
+  petScaleOut.textContent = `${scalePct}%`;
+
+  setChipInput(petSound, petCfg.sound !== false);
+  setChipInput(petClickThrough, !!petCfg.clickThrough);
+  setChipInput(petPrivacy, petCfg.privacyGuard !== false);
+  if (petCollar) petCollar.value = petCfg.collar || "none";
+  setChipInput(petHeadphones, petCfg.headphones === "on");
+
+  // 联动：经典贴图只留「显示内容 / 不透明度」；鲸鱼娘禁用 3D 与配饰；
+  // 配饰只在 3D 手办模式可用。
+  for (const row of [
+    petRenderRow,
+    petSkinRow,
+    petLayoutRow,
+    petViewRow,
+    petScaleRow,
+    petCatExtraRow,
+  ]) {
+    row?.classList.toggle("hidden", !cat);
+  }
+  pet3dRow?.classList.toggle("hidden", !is3d);
+  setRowEnabled(petRenderRow, cat && !whale);
+  setRowEnabled(pet3dRow, is3d);
+  renderPetHints();
+  renderPetLegend();
+
   setText("pet-tag", petCfg.enabled ? "已开启" : "已关闭");
   renderPetStatus();
 }
@@ -815,6 +940,17 @@ function readPetForm() {
       .filter((i) => i.checked)
       .map((i) => i.value),
     opacity: Number(petOpacity.value) / 100,
+    mode: radioValue(petModeBox, "pet-mode", "cat"),
+    renderMode: radioValue(petRenderBox, "pet-render", "2d"),
+    skin: petSkinSelect?.value || "black",
+    layout: radioValue(petLayoutBox, "pet-layout", "65"),
+    orientation: radioValue(petOrientationBox, "pet-orientation", "cat"),
+    scale: Number(petScale.value) / 100,
+    sound: petSound.checked,
+    clickThrough: petClickThrough.checked,
+    privacyGuard: petPrivacy.checked,
+    collar: petCollar?.value || "none",
+    headphones: petHeadphones.checked ? "on" : "off",
   };
 }
 
@@ -865,6 +1001,30 @@ petOpacity.addEventListener("input", () => {
   petOpacityOut.textContent = `${petOpacity.value}%`;
 });
 petOpacity.addEventListener("change", () => pushPetCfg(readPetForm()));
+
+for (const box of [petModeBox, petRenderBox, petLayoutBox, petOrientationBox]) {
+  box?.addEventListener("change", () => pushPetCfg(readPetForm()));
+}
+petSkinSelect?.addEventListener("change", () => pushPetCfg(readPetForm()));
+petCollar?.addEventListener("change", () => pushPetCfg(readPetForm()));
+for (const input of [petSound, petClickThrough, petPrivacy, petHeadphones]) {
+  input?.addEventListener("change", () => pushPetCfg(readPetForm()));
+}
+petScale.addEventListener("input", () => {
+  petScaleOut.textContent = `${petScale.value}%`;
+});
+petScale.addEventListener("change", () => pushPetCfg(readPetForm()));
+
+// 形象不同，温度刻度的说明也要换：经典贴图是换档贴图，打字猫是光晕/过热表现
+function renderPetLegend() {
+  const cat = petCfg.mode !== "classic";
+  setText(
+    "pet-legend-note",
+    cat
+      ? "打字猫的脚下光晕与温度强调色随 CPU 温度分 6 档变化：蓝（凉爽）→ 绿（舒适）→ 黄 → 橙 → 红（过热）；达到 84℃ 以上会出现脸红与汗滴。温度读不到时退回按 CPU 占用选档。"
+      : "形象按 CPU 温度分 6 档切换，每档 8 帧循环播放：蓝（凉爽）→ 绿（舒适）→ 黄 → 橙 → 红（过热）。温度读不到时退回按 CPU 占用选档。",
+  );
+}
 
 /* ---------------- 设置：任务栏显示 ---------------- */
 

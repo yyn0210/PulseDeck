@@ -58,7 +58,14 @@ windows = { version = "0.62", features = [
   "Win32_System_IO",
   "Win32_Storage_FileSystem",
   # 任务栏挂件（taskbar.rs）：找任务栏 / 通知区域窗口、读前台窗口、重新置顶
+  # 桌面宠物的全局键鼠钩子（pet_input.rs）也走这一组
   "Win32_UI_WindowsAndMessaging",
+  # 桌面宠物的全局键鼠钩子（WH_KEYBOARD_LL / WH_MOUSE_LL）与触摸板状态对账
+  "Win32_UI_Input_KeyboardAndMouse",
+  # 低层钩子需要模块句柄（GetModuleHandleW）
+  "Win32_System_LibraryLoader",
+  # 桌面宠物的密码框检测（pet_privacy.rs）：UI Automation 的 CurrentIsPassword
+  "Win32_UI_Accessibility",
   # 任务栏配色（SystemUsesLightTheme）取自注册表
   "Win32_System_Registry",
 ] }

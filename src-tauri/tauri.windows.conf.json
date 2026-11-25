@@ -1,9 +1,12 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "bundle": {
-    "targets": ["nsis"],
+    "targets": [
+      "nsis"
+    ],
     "resources": {
-      "resources/pawnio/": "pawnio/"
+      "resources/pawnio/": "pawnio/",
+      "resources/licenses/": "licenses/"
     }
   }
 }
