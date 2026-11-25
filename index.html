@@ -218,7 +218,8 @@
             </header>
             <p class="setting-desc">
               在桌面上放一只小宠物，实时显示你勾选的指标。窗口置顶、无边框、不进任务栏，
-              可以拖到任意位置；双击宠物会呼出主面板。
+              可以拖到任意位置；双击宠物会呼出主面板。默认是打字猫：敲键盘、按鼠标、摸猫头都有反应；
+              想回到原来的 6 档贴图，把「形象」切到「经典贴图」即可。
             </p>
             <div class="settings-grid">
               <label class="switch-row">
@@ -255,6 +256,121 @@
                   </label>
                 </div>
               </div>
+              <div class="setting-row">
+                <span class="setting-text">
+                  <b>形象</b>
+                  <small>打字猫对全局键鼠有反应；经典贴图保持原样</small>
+                </span>
+                <div class="chip-group" id="pet-mode">
+                  <label class="chip">
+                    <input type="radio" name="pet-mode" value="cat" /><span>打字猫</span>
+                  </label>
+                  <label class="chip">
+                    <input type="radio" name="pet-mode" value="classic" /><span>经典贴图</span>
+                  </label>
+                </div>
+              </div>
+              <div class="setting-row" id="pet-render-row">
+                <span class="setting-text">
+                  <b>渲染引擎</b>
+                  <small>3D 手办需要 WebGL2；不可用时自动回退 2D</small>
+                </span>
+                <div class="chip-group" id="pet-render">
+                  <label class="chip">
+                    <input type="radio" name="pet-render" value="2d" /><span>2D 手绘</span>
+                  </label>
+                  <label class="chip">
+                    <input type="radio" name="pet-render" value="3d" /><span>3D 手办</span>
+                  </label>
+                </div>
+              </div>
+              <div class="setting-row" id="pet-skin-row">
+                <span class="setting-text">
+                  <b>皮肤</b>
+                  <small>6 款内置猫 + 鲸鱼娘（鲸鱼娘仅 2D）</small>
+                </span>
+                <select id="pet-skin" aria-label="宠物皮肤">
+                  <option value="black">经典小黑猫</option>
+                  <option value="ragdoll">暖奶茶布偶</option>
+                  <option value="ginger">大橘猫</option>
+                  <option value="calico">三花猫</option>
+                  <option value="tuxedo">奶牛猫</option>
+                  <option value="siamese">暹罗猫</option>
+                  <option value="dafeiyu">鲸鱼娘（仅 2D）</option>
+                </select>
+              </div>
+              <div class="setting-row" id="pet-layout-row">
+                <span class="setting-text">
+                  <b>键盘</b>
+                  <small>108 键会把窗口加宽到 540</small>
+                </span>
+                <div class="chip-group" id="pet-layout">
+                  <label class="chip">
+                    <input type="radio" name="pet-layout" value="65" /><span>65% 紧凑</span>
+                  </label>
+                  <label class="chip">
+                    <input type="radio" name="pet-layout" value="108" /><span>108 键</span>
+                  </label>
+                </div>
+              </div>
+              <div class="setting-row" id="pet-view-row">
+                <span class="setting-text">
+                  <b>视角</b>
+                  <small>面向猫咪是真实 180° 视角；面向观众字母更易读</small>
+                </span>
+                <div class="chip-group" id="pet-orientation">
+                  <label class="chip">
+                    <input type="radio" name="pet-orientation" value="cat" /><span>面向猫咪</span>
+                  </label>
+                  <label class="chip">
+                    <input type="radio" name="pet-orientation" value="viewer" /><span>面向观众</span>
+                  </label>
+                </div>
+              </div>
+              <label class="setting-row" id="pet-scale-row">
+                <span class="setting-text">
+                  <b>尺寸</b>
+                  <small>只影响打字猫；窗口右下角保持锚定</small>
+                </span>
+                <span class="range-wrap">
+                  <input type="range" id="pet-scale" min="60" max="150" step="5" value="100" />
+                  <output id="pet-scale-out" class="pet-opacity-out">100%</output>
+                </span>
+              </label>
+              <div class="setting-row" id="pet-cat-extra">
+                <span class="setting-text">
+                  <b>互动</b>
+                  <small>摸头眯眼与呼噜声；锁定穿透后按住 Alt 可临时操作</small>
+                </span>
+                <div class="chip-group" id="pet-toggles">
+                  <label class="chip"><input type="checkbox" id="pet-sound" /><span>呼噜声</span></label>
+                  <label class="chip"
+                    ><input type="checkbox" id="pet-click-through" /><span>锁定鼠标穿透</span></label
+                  >
+                  <label class="chip"
+                    ><input type="checkbox" id="pet-privacy" /><span>密码防窥</span></label
+                  >
+                </div>
+              </div>
+              <div class="setting-row" id="pet-3d-row">
+                <span class="setting-text">
+                  <b>3D 配饰</b>
+                  <small>仅 3D 手办模式生效</small>
+                </span>
+                <div class="chip-group" id="pet-3d-options">
+                  <select id="pet-collar" aria-label="3D 项圈">
+                    <option value="none">无项圈</option>
+                    <option value="red">红项圈</option>
+                    <option value="blue">蓝项圈</option>
+                    <option value="pink">粉项圈</option>
+                    <option value="green">绿项圈</option>
+                  </select>
+                  <label class="chip"
+                    ><input type="checkbox" id="pet-headphones" /><span>电竞耳机</span></label
+                  >
+                </div>
+              </div>
+              <p class="setting-desc pet-cat-hint" id="pet-cat-hint" hidden></p>
               <label class="setting-row">
                 <span class="setting-text">
                   <b>不透明度</b>

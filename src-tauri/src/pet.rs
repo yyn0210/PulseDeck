@@ -42,6 +42,28 @@ const WIN_H: f64 = 224.0;
 /// 可选指标，取值与前端 `index.html` 里 checkbox 的 value 一致
 pub const METRIC_KEYS: [&str; 3] = ["cpu", "mem", "gpu"];
 
+/// 皮肤白名单：6 款猫 + 鲸鱼娘（鲸鱼娘只有 2D 渲染器）
+pub const SKIN_IDS: [&str; 7] = [
+    "black",
+    "ragdoll",
+    "ginger",
+    "calico",
+    "tuxedo",
+    "siamese",
+    "dafeiyu",
+];
+/// 键盘布局白名单
+pub const LAYOUT_IDS: [&str; 2] = ["65", "108"];
+/// 键盘视角白名单
+pub const ORIENTATION_IDS: [&str; 2] = ["cat", "viewer"];
+/// 3D 项圈颜色白名单
+pub const COLLAR_IDS: [&str; 5] = ["none", "red", "blue", "pink", "green"];
+/// 3D 耳机白名单
+pub const HEADPHONE_IDS: [&str; 2] = ["off", "on"];
+
+/// 打字猫模式指标条的逻辑高度（画布之外固定占位，保证小屏也读得清）
+pub const CAT_METRICS_BAR_H: f64 = 44.0;
+
 /// 传给 WebView2 的附加命令行参数。**当前为空 = 两个窗口都不带附加参数**。
 ///
 /// ⚠️ 历史教训一（0x8007139F）：Windows 下同一份 WebView2 用户数据目录只能对应
@@ -75,6 +97,39 @@ pub struct PetConfig {
     pub metrics: Vec<String>,
     /// 整体不透明度 0.3 ~ 1.0
     pub opacity: f32,
+    /// 形象模式：`cat`（打字猫）/ `classic`（6 档贴图）
+    #[serde(default = "default_mode")]
+    pub mode: String,
+    /// 打字猫渲染引擎：`2d` / `3d`（鲸鱼娘强制 2d）
+    #[serde(default = "default_render_mode")]
+    pub render_mode: String,
+    /// 皮肤 id，取值见 `SKIN_IDS`
+    #[serde(default = "default_skin")]
+    pub skin: String,
+    /// 键盘布局：`65` / `108`
+    #[serde(default = "default_layout")]
+    pub layout: String,
+    /// 键盘视角：`cat`（面向猫咪）/ `viewer`（面向观众）
+    #[serde(default = "default_orientation")]
+    pub orientation: String,
+    /// 打字猫尺寸倍率（0.6 ~ 1.5）
+    #[serde(default = "default_scale")]
+    pub scale: f64,
+    /// 摸头呼噜声开关
+    #[serde(default = "default_true")]
+    pub sound: bool,
+    /// 锁定鼠标穿透（按住 Alt 临时解锁）
+    #[serde(default)]
+    pub click_through: bool,
+    /// 密码框防窥开关（Windows）
+    #[serde(default = "default_true")]
+    pub privacy_guard: bool,
+    /// 3D 项圈颜色，取值见 `COLLAR_IDS`
+    #[serde(default = "default_collar")]
+    pub collar: String,
+    /// 3D 耳机：`off` / `on`
+    #[serde(default = "default_headphones")]
+    pub headphones: String,
     /// 窗口左上角，**逻辑像素**（与 `WebviewWindowBuilder::position` 同一套坐标）；
     /// `None` = 用户没拖过，用默认落点（主显示器右下角）。
     ///
@@ -88,6 +143,34 @@ pub struct PetConfig {
     pub position: Option<[f64; 2]>,
 }
 
+fn default_mode() -> String {
+    "cat".to_string()
+}
+fn default_render_mode() -> String {
+    "2d".to_string()
+}
+fn default_skin() -> String {
+    "black".to_string()
+}
+fn default_layout() -> String {
+    "65".to_string()
+}
+fn default_orientation() -> String {
+    "cat".to_string()
+}
+fn default_scale() -> f64 {
+    1.0
+}
+fn default_true() -> bool {
+    true
+}
+fn default_collar() -> String {
+    "none".to_string()
+}
+fn default_headphones() -> String {
+    "off".to_string()
+}
+
 impl Default for PetConfig {
     fn default() -> Self {
         Self {
@@ -95,6 +178,17 @@ impl Default for PetConfig {
             metrics: METRIC_KEYS.iter().map(|s| s.to_string()).collect(),
             opacity: 1.0,
             position: None,
+            mode: default_mode(),
+            render_mode: default_render_mode(),
+            skin: default_skin(),
+            layout: default_layout(),
+            orientation: default_orientation(),
+            scale: default_scale(),
+            sound: true,
+            click_through: false,
+            privacy_guard: true,
+            collar: default_collar(),
+            headphones: default_headphones(),
         }
     }
 }
@@ -124,6 +218,33 @@ impl PetConfig {
                 self.position = None;
             }
         }
+
+        if self.mode != "classic" {
+            self.mode = "cat".to_string();
+        }
+        if !SKIN_IDS.contains(&self.skin.as_str()) {
+            self.skin = default_skin();
+        }
+        if !LAYOUT_IDS.contains(&self.layout.as_str()) {
+            self.layout = default_layout();
+        }
+        if !ORIENTATION_IDS.contains(&self.orientation.as_str()) {
+            self.orientation = default_orientation();
+        }
+        if !COLLAR_IDS.contains(&self.collar.as_str()) {
+            self.collar = default_collar();
+        }
+        if !HEADPHONE_IDS.contains(&self.headphones.as_str()) {
+            self.headphones = default_headphones();
+        }
+        // 鲸鱼娘只有 2D 渲染器；3D 在小尺寸下也看不清，未知值一律回到 2D
+        if self.skin == "dafeiyu" || self.render_mode != "3d" {
+            self.render_mode = "2d".to_string();
+        }
+        if !self.scale.is_finite() {
+            self.scale = default_scale();
+        }
+        self.scale = self.scale.clamp(0.6, 1.5);
     }
 }
 
@@ -157,7 +278,7 @@ pub struct PetStore {
 /// 宠物窗口是「无边框 + 跳过任务栏」的，一旦没建出来，桌面上什么都不显示，
 /// 肉眼完全分不清「配置没读到」还是「建窗失败」还是「页面没跑起来」。
 /// 这条链路上的每一步都记一笔 `pet.log`，出问题时先看它。
-fn plog(msg: impl AsRef<str>) {
+pub(crate) fn plog(msg: impl AsRef<str>) {
     if std::env::var_os("PULSEDECK_PET_TRACE").is_none() {
         return;
     }
@@ -274,6 +395,74 @@ fn config_path() -> std::path::PathBuf {
     crate::app_dir().join(FILE_NAME)
 }
 
+/* ------------------------------ 窗口尺寸 ------------------------------ */
+
+/// 打字猫画布的逻辑基准尺寸（随键盘布局变化）。
+///
+/// 与 KuroCat 的 `base_dimensions` 对齐：65% 键 420×440、108 键 540×456。
+/// 窗口 = 画布 × scale + 固定高度指标条（见 [`window_size`]）。
+pub fn base_canvas_size(layout: &str) -> (f64, f64) {
+    if layout == "108" {
+        (540.0, 456.0)
+    } else {
+        (420.0, 440.0)
+    }
+}
+
+/// 按配置算出窗口的逻辑尺寸。
+///
+/// 经典贴图保持 190×224；打字猫把指标条算进高度，宽度只随画布缩放。
+pub fn window_size(config: &PetConfig) -> (f64, f64) {
+    if config.mode == "classic" {
+        return (WIN_W, WIN_H);
+    }
+    let (bw, bh) = base_canvas_size(&config.layout);
+    let scale = config.scale.clamp(0.6, 1.5);
+    (
+        (bw * scale).round().max(1.0),
+        (bh * scale).round() + CAT_METRICS_BAR_H,
+    )
+}
+
+/// 窗口尺寸变化时保持右下角锚定，并把窗口夹回当前显示器工作区。
+///
+/// 尺寸没变时什么都不做（`set_pet_config` 每次都会走到这里）。
+fn apply_window_geometry(win: &tauri::WebviewWindow, w: f64, h: f64) {
+    let scale = win.scale_factor().unwrap_or(1.0).max(0.1);
+    let cur = win.inner_size().ok();
+    if let Some(cur) = cur {
+        if (cur.width as f64 / scale - w).abs() < 0.5
+            && (cur.height as f64 / scale - h).abs() < 0.5
+        {
+            return;
+        }
+    }
+    let old_pos = win.outer_position().ok();
+    let old_size = win.outer_size().ok();
+    plog(format!("apply_window_geometry -> {w}x{h}"));
+    let _ = win.set_size(tauri::Size::Logical(tauri::LogicalSize::new(w, h)));
+    let (Some(pos), Some(size)) = (old_pos, old_size) else {
+        return;
+    };
+    let dx = size.width as f64 - w * scale;
+    let dy = size.height as f64 - h * scale;
+    let mut nx = pos.x as f64 + dx;
+    let mut ny = pos.y as f64 + dy;
+    if let Ok(Some(monitor)) = win.current_monitor() {
+        let area = monitor.work_area();
+        let min_x = area.position.x as f64;
+        let min_y = area.position.y as f64;
+        let max_x = (min_x + area.size.width as f64 - w * scale).max(min_x);
+        let max_y = (min_y + area.size.height as f64 - h * scale).max(min_y);
+        nx = nx.clamp(min_x, max_x);
+        ny = ny.clamp(min_y, max_y);
+    }
+    let _ = win.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(
+        nx.round() as i32,
+        ny.round() as i32,
+    )));
+}
+
 /* ------------------------------ 窗口 ------------------------------ */
 
 /// 按配置同步窗口的存在与否：开 → 没有就建；关 → 有就销毁
@@ -299,6 +488,10 @@ pub fn sync_window(app: &tauri::AppHandle, config: &PetConfig) -> tauri::Result<
     if config.enabled {
         if !exists {
             create_window(app, config)?;
+        } else if let Some(win) = app.get_webview_window(WINDOW_LABEL) {
+            // 模式 / 键位 / 尺寸变化：只调整几何，不重建 WebView（重建会闪一下）
+            let (w, h) = window_size(config);
+            apply_window_geometry(&win, w, h);
         }
     } else if let Some(win) = app.get_webview_window(WINDOW_LABEL) {
         plog("sync_window destroy");
@@ -308,6 +501,15 @@ pub fn sync_window(app: &tauri::AppHandle, config: &PetConfig) -> tauri::Result<
         "sync_window done -> exists={}",
         app.get_webview_window(WINDOW_LABEL).is_some()
     ));
+    // 全局键鼠钩子 / 密码防窥 / 鼠标穿透只在「宠物开启 + 打字猫」时运行；
+    // 关闭宠物或切回经典贴图会在这里立即卸载钩子（不拦截任何输入）。
+    crate::pet_input::sync(
+        app,
+        config.enabled,
+        &config.mode,
+        config.click_through,
+        config.privacy_guard,
+    );
     Ok(())
 }
 
@@ -415,13 +617,14 @@ fn get_main_environment(
 }
 
 fn create_window(app: &tauri::AppHandle, config: &PetConfig) -> tauri::Result<()> {
+    let (w, h) = window_size(config);
     let (x, y) = restore_position(app, config);
     let url = WebviewUrl::App("pet.html".into());
-    plog(format!("create_window url={url:?} size={WIN_W}x{WIN_H} at ({x},{y})"));
+    plog(format!("create_window url={url:?} size={w}x{h} at ({x},{y})"));
 
     let mut builder = WebviewWindowBuilder::new(app, WINDOW_LABEL, url)
         .title("桌面宠物")
-        .inner_size(WIN_W, WIN_H)
+        .inner_size(w, h)
         .position(x, y);
 
     // Windows 上多个 WebView 共享同一个 ICoreWebView2Environment（官方推荐做法：
@@ -483,7 +686,8 @@ fn create_window(app: &tauri::AppHandle, config: &PetConfig) -> tauri::Result<()
 }
 
 /// 默认落点：主显示器工作区右下角（避开任务栏）
-fn default_position(app: &tauri::AppHandle) -> (f64, f64) {
+fn default_position(app: &tauri::AppHandle, config: &PetConfig) -> (f64, f64) {
+    let (win_w, win_h) = window_size(config);
     let mut x = 160.0;
     let mut y = 160.0;
     if let Ok(Some(m)) = app.primary_monitor() {
@@ -491,9 +695,9 @@ fn default_position(app: &tauri::AppHandle) -> (f64, f64) {
         let area = m.work_area();
         let w = area.size.width as f64 / scale;
         let h = area.size.height as f64 / scale;
-        if w > WIN_W && h > WIN_H {
-            x = area.position.x as f64 / scale + w - WIN_W - 24.0;
-            y = area.position.y as f64 / scale + h - WIN_H - 12.0;
+        if w > win_w && h > win_h {
+            x = area.position.x as f64 / scale + w - win_w - 24.0;
+            y = area.position.y as f64 / scale + h - win_h - 12.0;
         }
     }
     (x.max(0.0), y.max(0.0))
@@ -507,16 +711,62 @@ fn default_position(app: &tauri::AppHandle) -> (f64, f64) {
 fn restore_position(app: &tauri::AppHandle, config: &PetConfig) -> (f64, f64) {
     if let Some([x, y]) = config.position {
         if position_on_some_monitor(app, x, y) {
+            let (w, h) = window_size(config);
+            if let Some((left, top, right, bottom)) = monitor_work_area_containing(app, x, y) {
+                let (cx, cy) = clamp_position_to_rect(x, y, w, h, left, top, right, bottom);
+                plog(format!("恢复保存的位置 ({x}, {y}) -> 夹取为 ({cx}, {cy})"));
+                return (cx, cy);
+            }
             plog(format!("恢复保存的位置 ({x}, {y})"));
             return (x, y);
         }
         plog(format!("保存的位置 ({x}, {y}) 不在任何显示器上，回退默认落点"));
     }
-    default_position(app)
+    default_position(app, config)
 }
 
 /// 逻辑坐标点是否落在某个显示器范围内。
 ///
+/// 把窗口左上角夹进一块矩形（全部逻辑像素）。
+///
+/// 升级自旧版的 `pet.json` 时，窗口可能从 190×224 变成 420×484：旧位置贴在屏幕右下角，
+/// 直接照搬会让窗口下半截/右边超出工作区。这里把窗口整体夹回可见范围。
+fn clamp_position_to_rect(
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    left: f64,
+    top: f64,
+    right: f64,
+    bottom: f64,
+) -> (f64, f64) {
+    let max_x = (right - w).max(left);
+    let max_y = (bottom - h).max(top);
+    (x.clamp(left, max_x), y.clamp(top, max_y))
+}
+
+/// 包含逻辑坐标点 `(x,y)` 的显示器工作区（逻辑像素）
+fn monitor_work_area_containing(
+    app: &tauri::AppHandle,
+    x: f64,
+    y: f64,
+) -> Option<(f64, f64, f64, f64)> {
+    let monitors = app.available_monitors().ok()?;
+    for m in monitors.iter() {
+        let scale = m.scale_factor().max(0.1);
+        let area = m.work_area();
+        let left = area.position.x as f64 / scale;
+        let top = area.position.y as f64 / scale;
+        let right = left + area.size.width as f64 / scale;
+        let bottom = top + area.size.height as f64 / scale;
+        if x >= left && x < right && y >= top && y < bottom {
+            return Some((left, top, right, bottom));
+        }
+    }
+    None
+}
+
 /// 显示器给的是**物理像素**（各屏 `scale_factor` 还可能不同），而保存的位置是逻辑像素，
 /// 所以按每个显示器自己的缩放换算后再比。查不到显示器列表（极少见）时返回 true——
 /// 那属于异常路径，宁可相信保存的位置，也不要无故把宠物挪回默认角落。
@@ -623,7 +873,7 @@ mod tests {
             enabled: true,
             metrics: vec!["gpu".into(), "cpu".into(), "gpu".into(), "disk".into()],
             opacity: 5.0,
-            position: None,
+            ..PetConfig::default()
         };
         cfg.sanitize();
         assert_eq!(cfg.metrics, vec!["gpu".to_string(), "cpu".to_string()]);
@@ -636,7 +886,7 @@ mod tests {
             enabled: true,
             metrics: vec!["nope".into()],
             opacity: 0.1,
-            position: None,
+            ..PetConfig::default()
         };
         cfg.sanitize();
         assert_eq!(cfg.metrics, vec!["cpu".to_string()]);
@@ -665,7 +915,7 @@ mod tests {
             enabled: true,
             metrics: vec!["cpu".into()],
             opacity: 0.9,
-            position: None,
+            ..PetConfig::default()
         };
         submitted.sanitize();
         let merged = adopt_position(submitted, Some([1234.0, 567.0]));
@@ -680,7 +930,7 @@ mod tests {
             enabled: true,
             metrics: vec!["cpu".into()],
             opacity: 1.0,
-            position: None,
+            ..PetConfig::default()
         };
 
         let mut nan = PetConfig {
@@ -719,6 +969,105 @@ mod tests {
         let m = metrics_from(&s);
         assert_eq!(m.color_source, "temp");
         assert_eq!(m.cpu_temp_c, Some(61.5));
+    }
+
+    /// 旧位置在屏幕右下角、窗口变大后要整体夹回工作区，不能只校验左上角
+    #[test]
+    fn clamp_position_keeps_window_inside_work_area() {
+        // 1920x1080 工作区，窗口 420x484，旧位置 (1600, 800) 会超出右下角
+        let (x, y) = clamp_position_to_rect(1600.0, 800.0, 420.0, 484.0, 0.0, 0.0, 1920.0, 1080.0);
+        assert_eq!(x, 1500.0);
+        assert_eq!(y, 596.0);
+        // 窗口比工作区还大时贴左上角，不出现负坐标
+        let (x, y) = clamp_position_to_rect(100.0, 100.0, 3000.0, 2000.0, -100.0, 0.0, 1920.0, 1080.0);
+        assert_eq!((x, y), (-100.0, 0.0));
+    }
+
+    /// 新字段默认值：旧配置缺字段时落到打字猫 2D + 黑猫，而不是关闭宠物
+    #[test]
+    fn new_fields_have_safe_defaults() {
+        let cfg: PetConfig =
+            serde_json::from_str(r#"{"enabled":true,"metrics":["cpu"],"opacity":1.0}"#)
+                .expect("旧配置必须能解析");
+        assert_eq!(cfg.mode, "cat");
+        assert_eq!(cfg.render_mode, "2d");
+        assert_eq!(cfg.skin, "black");
+        assert_eq!(cfg.layout, "65");
+        assert_eq!(cfg.orientation, "cat");
+        assert!((cfg.scale - 1.0).abs() < 1e-9);
+        assert!(cfg.sound);
+        assert!(!cfg.click_through);
+        assert!(cfg.privacy_guard);
+        assert_eq!(cfg.collar, "none");
+        assert_eq!(cfg.headphones, "off");
+    }
+
+    /// 非法新字段要被清洗：未知皮肤/键位/视角/配饰回落白名单首项，
+    /// 鲸鱼娘强制 2D，比例夹到 0.6~1.5
+    #[test]
+    fn sanitize_normalizes_new_fields() {
+        let mut cfg = PetConfig {
+            mode: "weird".into(),
+            render_mode: "3d".into(),
+            skin: "dafeiyu".into(),
+            layout: "999".into(),
+            orientation: "sideways".into(),
+            scale: 9.0,
+            collar: "gold".into(),
+            headphones: "auto".into(),
+            ..PetConfig::default()
+        };
+        cfg.sanitize();
+        assert_eq!(cfg.mode, "cat");
+        assert_eq!(cfg.render_mode, "2d", "鲸鱼娘只有 2D 渲染器");
+        assert_eq!(cfg.skin, "dafeiyu");
+        assert_eq!(cfg.layout, "65");
+        assert_eq!(cfg.orientation, "cat");
+        assert!((cfg.scale - 1.5).abs() < 1e-9);
+        assert_eq!(cfg.collar, "none");
+        assert_eq!(cfg.headphones, "off");
+
+        let mut tiny = PetConfig {
+            scale: 0.01,
+            ..PetConfig::default()
+        };
+        tiny.sanitize();
+        assert!((tiny.scale - 0.6).abs() < 1e-9);
+    }
+
+    /// 窗口尺寸：经典 190×224；打字猫随键位与比例变化，并额外加指标条高度
+    #[test]
+    fn window_size_tracks_mode_layout_and_scale() {
+        let classic = PetConfig {
+            mode: "classic".into(),
+            ..PetConfig::default()
+        };
+        assert_eq!(window_size(&classic), (190.0, 224.0));
+
+        let cat = PetConfig::default();
+        assert_eq!(window_size(&cat), (420.0, 440.0 + CAT_METRICS_BAR_H));
+
+        let cat108 = PetConfig {
+            layout: "108".into(),
+            ..PetConfig::default()
+        };
+        assert_eq!(window_size(&cat108), (540.0, 456.0 + CAT_METRICS_BAR_H));
+
+        let small = PetConfig {
+            scale: 0.6,
+            ..PetConfig::default()
+        };
+        assert_eq!(window_size(&small), (252.0, 264.0 + CAT_METRICS_BAR_H));
+    }
+
+    /// 鼠标穿透锁定依赖 `set_ignore_cursor_events`，capability 必须显式授权
+    #[test]
+    fn pet_capability_allows_ignore_cursor_events() {
+        let cap = include_str!("../capabilities/default.json");
+        assert!(
+            cap.contains("\"core:window:allow-set-ignore-cursor-events\""),
+            "capabilities/default.json 必须包含 core:window:allow-set-ignore-cursor-events，             否则「锁定鼠标穿透」会被 ACL 静默拒绝。"
+        );
     }
 
     /// 宠物窗口的**拖动**必须显式授权，否则 Tauri 的 drag.js 调

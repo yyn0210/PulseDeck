@@ -258,8 +258,34 @@
   }
 
   const settings = { autostart: false, closeToTray: true };
-  // 桌面宠物：预览模式下不真的开窗，只把配置存起来，供 pet.html?mock=1 读取
-  let petConfig = { enabled: false, metrics: ["cpu", "mem", "gpu"], opacity: 1 };
+  // 桌面宠物：预览模式下不真的开窗，只把配置存起来，供 pet.html?mock=1 读取。
+  // `?mock=1&pet=cat&render=3d&skin=black&petlayout=108&view=viewer&petscale=0.8&collar=red&headphones=on`
+  // 可预览打字猫的各个形态；不带参数时保持旧默认（关闭 + 经典配置）。
+  const petMode = params.get("pet") === "classic" ? "classic" : "cat";
+  const petRender = params.get("render") === "3d" ? "3d" : "2d";
+  const petSkin = params.get("skin") || "black";
+  const petLayout = params.get("petlayout") === "108" ? "108" : "65";
+  const petOrientation = params.get("view") === "viewer" ? "viewer" : "cat";
+  const petScale = Number(params.get("petscale")) || 1;
+  const petCollar = params.get("collar") || "none";
+  const petHeadphones = params.get("headphones") === "on" ? "on" : "off";
+  const petPrivate = params.get("private") === "1";
+  let petConfig = {
+    enabled: false,
+    metrics: ["cpu", "mem", "gpu"],
+    opacity: 1,
+    mode: petMode,
+    renderMode: petRender,
+    skin: petSkin,
+    layout: petLayout,
+    orientation: petOrientation,
+    scale: petScale,
+    sound: true,
+    clickThrough: false,
+    privacyGuard: true,
+    collar: petCollar,
+    headphones: petHeadphones,
+  };
   // 任务栏挂件：同上，供 taskbar.html?mock=1 读取。
   // `?mock=1&theme=light` 预览浅色任务栏、`?mock=1&vertical=1` 预览竖排任务栏（贴屏幕左右侧）
   let taskbarConfig = { enabled: false, metrics: ["cpu", "mem", "net"] };
@@ -424,6 +450,23 @@
           next.metrics = (next.metrics || []).filter((m) => keys.includes(m));
           if (!next.metrics.length) next.metrics = ["cpu"];
           next.opacity = Math.min(1, Math.max(0.3, Number(next.opacity) || 1));
+          const skins = [
+            "black",
+            "ragdoll",
+            "ginger",
+            "calico",
+            "tuxedo",
+            "siamese",
+            "dafeiyu",
+          ];
+          if (!skins.includes(next.skin)) next.skin = "black";
+          if (next.mode !== "classic") next.mode = "cat";
+          next.renderMode = next.skin === "dafeiyu" || next.renderMode !== "3d" ? "2d" : "3d";
+          if (!["65", "108"].includes(next.layout)) next.layout = "65";
+          if (!["cat", "viewer"].includes(next.orientation)) next.orientation = "cat";
+          next.scale = Math.min(1.5, Math.max(0.6, Number(next.scale) || 1));
+          if (!["none", "red", "blue", "pink", "green"].includes(next.collar)) next.collar = "none";
+          if (!["off", "on"].includes(next.headphones)) next.headphones = "off";
           petConfig = next;
           return Promise.resolve(petConfig);
         }
@@ -451,6 +494,7 @@
             windowOpen: petConfig.enabled,
             heartbeatAgeMs: petConfig.enabled ? 400 : null,
             alive: petConfig.enabled,
+            inputSupported: true,
           });
         case "get_taskbar_config":
           return Promise.resolve(taskbarConfig);

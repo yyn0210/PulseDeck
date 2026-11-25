@@ -1,6 +1,7 @@
 # THIRD-PARTY-NOTICES — 第三方组件声明
 
 > 本文件由仓库脚本于 2026-10-13 基于 `src-tauri/Cargo.lock` 与 cargo/npm 注册表元数据生成,覆盖 PulseDeck 安装包分发的全部第三方代码与素材。
+> 2026-11 增补:移植自 KuroCat 的打字猫引擎、鲸鱼娘素材与 three.js(均 MIT)。
 > 各组件的**精确版权声明以其实际 LICENSE 文件为准**;本文件同时随附本项目产物中出现的各开源许可证全文(附录)。
 
 本项目的自有代码以 [Apache-2.0](LICENSE) 发布(Copyright 2026 janeluo)。
@@ -21,6 +22,8 @@
 | 素材 | 来源 | 说明 |
 | --- | --- | --- |
 | 桌面宠物贴图(`src/assets/pet/*.png`,6 档 × 8 帧) | **豆包(字节跳动)AI 图像生成**,由本项目抠底/缩放加工 | 依豆包用户协议,平台不主张生成内容所有权、权利归用户;生成于 2026-10,为该项目专用素材 |
+| 鲸鱼娘素材(`src/assets/dafeiyu/notail_*.png`,4 张) | [PC2005-cloud/dsh-pet](https://github.com/PC2005-cloud/dsh-pet)(MIT),经 [QCYTSN/dsh-dafeiyu](https://github.com/QCYTSN/dsh-dafeiyu) 重打包 | MIT;许可全文随包:`src/assets/dafeiyu/LICENSE-MIT.txt` 与 `src-tauri/resources/licenses/DSH-PET-MIT.txt` |
+| 打字猫引擎源码(`src/pet/engine/*`,2D/3D/鲸鱼娘渲染与键位) | [KuroCat](https://github.com/qianyiai/kurocat) v5.1.0 | MIT;已改编并入本程序,版权声明保留在源文件头,许可全文随包:`src-tauri/resources/licenses/KUROCAT-MIT.txt` |
 | 应用图标(`src-tauri/icons/*`) | 本项目自绘 | — |
 
 ## 三、运行时链接的 npm 依赖(随包分发)
@@ -28,6 +31,7 @@
 | 包 | 版本 | 许可 | 版权 / 出处 |
 | --- | --- | --- | --- |
 | [@tauri-apps/api](https://github.com/tauri-apps/tauri) | 2.12.1 | Apache-2.0 OR MIT | Tauri Programme within The Commons Conservancy |
+| [three](https://github.com/mrdoob/three.js) | 0.187.0 | MIT | three.js authors |
 
 ## 四、静态链接的 Rust 依赖(随包分发)
 

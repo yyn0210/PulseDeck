@@ -17,6 +17,11 @@ use std::time::Duration;
  * PawnIO 提权链（pawnio/pawnio_setup/msr_bridge）。
  */
 
+// 桌面宠物的全局键鼠钩子 / 光标看护（Windows 实现，非 Windows 空实现）与密码防窥。
+// 两者都是 tauri 通用模块入口，内部按 cfg 分区。
+mod pet_input;
+mod pet_privacy;
+
 #[cfg(windows)]
 mod gpu;
 #[cfg(windows)]
@@ -64,7 +69,7 @@ mod taskbar;
 use model::Snapshot;
 use tauri::menu::{CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 
 pub struct AppState {
     sampler: Arc<sampler::Sampler>,
@@ -157,6 +162,9 @@ async fn set_pet_config(
 ) -> Result<pet::PetConfig, String> {
     let cfg = state.pet.set(config);
     pet::sync_window(&app, &cfg).map_err(|e| format!("打开/关闭桌面宠物失败：{e}"))?;
+    // 立即把清洗后的配置推给宠物页：形象/皮肤/键位/尺寸/穿透等改动不必等 3s 轮询，
+    // 否则「切换后立即生效」会有一段肉眼可见的滞后（窗口宽度先变、键盘稍后跟上）。
+    let _ = app.emit_to(pet::WINDOW_LABEL, "pet-config", &cfg);
     Ok(cfg)
 }
 
@@ -191,6 +199,8 @@ fn pet_status(app: tauri::AppHandle) -> serde_json::Value {
         "windowOpen": open,
         "heartbeatAgeMs": age,
         "alive": alive,
+        // 全局键鼠监听 / 密码防窥只有 Windows 实现；设置页据此说明限制
+        "inputSupported": pet_input::is_supported(),
     })
 }
 
@@ -919,6 +929,8 @@ pub fn run() {
                 if let Some(state) = window.app_handle().try_state::<AppState>() {
                     state.pet.flush_position();
                 }
+                // 窗口没了就没有接收方：立即卸载全局钩子与穿透，等下次 sync_window 重建
+                pet_input::deactivate(&window.app_handle());
             }
             _ => {}
         })
