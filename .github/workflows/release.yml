@@ -155,6 +155,10 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Ubuntu 24.04 的系统库带 .relr.dyn 段，linuxdeploy 自带的 strip 不认
+          # （unknown type [0x13] section .relr.dyn），会以 "failed to run linuxdeploy" 失败；
+          # 关闭 strip 即可，代价是 AppImage 略大（0.10.0 的 90MB 也是这个量级）。
+          NO_STRIP: "true"
         with:
           tagName: ${{ github.ref_name }}
           releaseName: '脉盘 PulseDeck ${{ github.ref_name }}'
